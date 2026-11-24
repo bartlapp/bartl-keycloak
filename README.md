@@ -2,7 +2,7 @@
 
 Keycloak over HTTPS with its own PostgreSQL database. The package initializes empty state, reconstructs from a configured backup and performs supported native migrations.
 
-These instructions target the 0.8.0 release candidate; stable registry publication is still pending. Earlier packages retain their release-specific recovery behavior and inputs.
+These instructions target stable release [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0). Earlier packages retain their release-specific recovery behavior and inputs.
 
 - [Prerequisites](#prerequisites)
 - [Install a new deployment](#install-a-new-deployment)
