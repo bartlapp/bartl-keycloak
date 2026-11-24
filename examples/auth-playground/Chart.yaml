@@ -1,0 +1,10 @@
+apiVersion: v2
+name: auth-playground-lab
+description: Namespace-local upstream Auth Playground for a synthetic Keycloak realm
+type: application
+version: 0.1.1
+appVersion: "0.1.7"
+kubeVersion: ">=1.30.0-0"
+annotations:
+  upstream.commit: d6e6b9fa15108579e40b16097f59425af0089ff8
+  upstream.image-index: sha256:0c6a5630de5f157e72ce1e67c913832bffc8688dfc03aadab56e703ead686e0b

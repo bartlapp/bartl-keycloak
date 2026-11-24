@@ -1,0 +1,7 @@
+# Shared installation context. Supply installation and either dns.root or a hostname.
+installation: ""
+# Optional deployment selector; otherwise instance defaults to keycloak.
+deployment: ""
+renderMode: deployment
+# Defaults are applied to the selected instance without selecting any service here.
+services: {}

@@ -1,0 +1,92 @@
+{{- if eq .Values.renderMode "deployment" }}
+{{- $service := include "keycloak.service" . | fromYaml }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak-controller
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak-workload
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keycloak-controller
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [keycloak.bartl.sh]
+    resources: [keycloakapplications]
+    verbs: [get, list, watch]
+  - apiGroups: [keycloak.bartl.sh]
+    resources: [keycloakapplications/status]
+    resourceNames: [keycloak]
+    verbs: [get, update, patch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [keycloak.bartl.sh]
+    resources: [keycloakapplications/finalizers]
+    resourceNames: [keycloak]
+    verbs: [update]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    verbs: [get, list, watch, create, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [services, persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [traefik.io]
+    resources: [middlewares]
+    verbs: [get, create, update, patch, delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames:
+      {{- $names := list $service.database.secretName $service.database.adminSecretName }}
+      {{- with $service.bootstrapAdminSecret }}
+      {{- $names = append $names . }}
+      {{- end }}
+      {{- range $names | uniq }}
+      - {{ . | quote }}
+      {{- end }}
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keycloak-controller
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: keycloak-controller
+    namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keycloak-controller
+{{- end }}

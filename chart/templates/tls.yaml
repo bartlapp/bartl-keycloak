@@ -1,0 +1,37 @@
+{{- if eq .Values.renderMode "deployment" }}
+{{- $service := include "keycloak.service" . | fromYaml }}
+{{- if $service.tls.managed }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: keycloak-letsencrypt
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  acme:
+    server: {{ $service.tls.acmeServer | quote }}
+    privateKeySecretRef:
+      name: keycloak-letsencrypt-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: {{ $service.ingress.className | quote }}
+            serviceType: ClusterIP
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $service.ingress.tlsSecretName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $service.ingress.tlsSecretName | quote }}
+  dnsNames:
+    - {{ $service.hostname | quote }}
+  issuerRef:
+    name: keycloak-letsencrypt
+    kind: Issuer
+{{- end }}
+{{- end }}

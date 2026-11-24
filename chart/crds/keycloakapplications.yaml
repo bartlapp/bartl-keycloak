@@ -1,0 +1,278 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: keycloakapplications.keycloak.bartl.sh
+  annotations:
+    keycloak.bartl.sh/crd-revision: "3"
+spec:
+  group: keycloak.bartl.sh
+  scope: Namespaced
+  names:
+    plural: keycloakapplications
+    singular: keycloakapplication
+    kind: KeycloakApplication
+    shortNames: [kca]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Stopped
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Stopped")].status
+        - name: State
+          type: string
+          jsonPath: .status.state.classification
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          x-kubernetes-validations:
+            - rule: self.metadata.name == 'keycloak'
+              message: This API profile permits one KeycloakApplication named keycloak per namespace.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [identity, packageRelease, application, configuration, database, ingress]
+              properties:
+                identity:
+                  type: object
+                  x-kubernetes-map-type: atomic
+                  required: [installation, instance]
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: Logical identity is immutable; use a separate namespace for a new placement.
+                  properties:
+                    installation:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                      pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
+                    instance:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                      pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
+                packageRelease:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                application:
+                  type: object
+                  required: [replicas]
+                  properties:
+                    replicas:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                configuration:
+                  type: object
+                  required: [hostname]
+                  properties:
+                    hostname:
+                      type: string
+                      maxLength: 253
+                      pattern: '^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(:[0-9]{1,5})?$'
+                database:
+                  type: object
+                  x-kubernetes-map-type: atomic
+                  required: [secretName, adminSecretName, size]
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: Database credentials and storage binding are immutable in this profile.
+                  properties:
+                    secretName:
+                      type: string
+                      maxLength: 253
+                      pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    adminSecretName:
+                      type: string
+                      maxLength: 253
+                      pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    size:
+                      type: string
+                      maxLength: 32
+                      pattern: '^[1-9][0-9]*(Mi|Gi|Ti)$'
+                bootstrapAdminSecret:
+                  type: string
+                  maxLength: 253
+                  pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                ingress:
+                  type: object
+                  required: [enabled, maintenance, className, controllerNamespace, controllerPodLabels]
+                  x-kubernetes-validations:
+                    - rule: '!self.enabled || (has(self.tlsSecretName) && size(self.tlsSecretName) > 0)'
+                      message: TLS Secret reference is required when ingress is enabled.
+                    - rule: '!self.maintenance || (has(self.administratorSourceRanges) && size(self.administratorSourceRanges) > 0)'
+                      message: Maintenance requires administrator source ranges.
+                  properties:
+                    enabled:
+                      type: boolean
+                    maintenance:
+                      type: boolean
+                    className:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                    tlsSecretName:
+                      type: string
+                      maxLength: 253
+                      pattern: '^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    administratorSourceRanges:
+                      type: array
+                      maxItems: 64
+                      x-kubernetes-list-type: set
+                      items:
+                        type: string
+                        maxLength: 64
+                        pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$|^[0-9a-fA-F:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$'
+                    controllerNamespace:
+                      type: string
+                      maxLength: 63
+                      pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                    controllerPodLabels:
+                      type: object
+                      minProperties: 1
+                      maxProperties: 32
+                      additionalProperties:
+                        type: string
+                        maxLength: 63
+                backup:
+                  type: object
+                  required: [repository, readerSecret, writerSecret, schedule, timeZone, suspend]
+                  properties:
+                    repository:
+                      type: string
+                      minLength: 1
+                      maxLength: 2048
+                      pattern: '^rest:https://[^/@?#]+(/[^?#]*)?$'
+                    readerSecret:
+                      type: string
+                      maxLength: 253
+                      pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    writerSecret:
+                      type: string
+                      maxLength: 253
+                      pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    schedule:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                    timeZone:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                    suspend:
+                      type: boolean
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                packageRelease:
+                  type: string
+                  maxLength: 128
+                state:
+                  type: object
+                  properties:
+                    classification:
+                      type: string
+                      maxLength: 64
+                    reason:
+                      type: string
+                      maxLength: 256
+                application:
+                  type: object
+                  properties:
+                    desiredReplicas:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                    readyReplicas:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                    activePods:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                operation:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    kind:
+                      type: string
+                    initiatedGeneration:
+                      type: integer
+                      format: int64
+                    target:
+                      type: object
+                      properties:
+                        pvcUID:
+                          type: string
+                        databaseIdentity:
+                          type: string
+                    snapshot:
+                      type: object
+                      properties:
+                        repositoryIdentity:
+                          type: string
+                        id:
+                          type: string
+                    job:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        uid:
+                          type: string
+                    result:
+                      type: string
+                conditions:
+                  type: array
+                  maxItems: 16
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    required: [type, status, reason, message, lastTransitionTime]
+                    properties:
+                      type:
+                        type: string
+                        maxLength: 316
+                        pattern: '^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z]([A-Za-z0-9]*[A-Za-z0-9])?$'
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                        minLength: 1
+                        maxLength: 1024
+                        pattern: '^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$'
+                      message:
+                        type: string
+                        maxLength: 4096

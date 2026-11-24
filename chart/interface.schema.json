@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "deployment": {
+      "type": "object", "additionalProperties": true,
+      "required": ["instance", "namespace", "release", "package"],
+      "properties": {
+        "instance": {"$ref": "#/definitions/identity"},
+        "namespace": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "release": {"type": "string", "minLength": 1, "maxLength": 53, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "package": {"$ref": "#/definitions/identity"}
+      }
+    },
+    "package": {
+      "type": "object", "additionalProperties": true, "required": ["version"],
+      "properties": {"version": {"type": "string", "minLength": 1}}
+    },
+    "intent": {
+      "type": "object", "additionalProperties": true,
+      "properties": {
+        "replicas": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "ingressEnabled": {"type": "boolean"},
+        "maintenance": {"type": "boolean"},
+        "backupSuspend": {"type": "boolean"}
+      }
+    },
+    "service": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "release": {"type": "string", "minLength": 1},
+        "tls": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "managed": {"type": "boolean"},
+            "acmeServer": {"type": "string", "pattern": "^https://[^ ]+$"}
+          }
+        },
+        "hostname": {"type": "string", "minLength": 1, "maxLength": 245, "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"},
+        "realm": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
+        "application": {"type": "object", "additionalProperties": false, "properties": {"replicas": {"type": "integer", "minimum": 0, "maximum": 2147483647}}},
+        "database": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "secretName": {"$ref": "#/definitions/secretName"},
+            "adminSecretName": {"$ref": "#/definitions/secretName"},
+            "size": {"type": "string", "maxLength": 32, "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$"}
+          }
+        },
+        "bootstrapAdminSecret": {"$ref": "#/definitions/optionalSecretName"},
+        "ingress": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "className": {"type": "string", "minLength": 1, "maxLength": 253},
+            "tlsSecretName": {"$ref": "#/definitions/optionalSecretName"},
+            "maintenance": {"type": "boolean"},
+            "administratorSourceRanges": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "maxLength": 64, "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$|^[0-9a-fA-F:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"}},
+            "controllerNamespace": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+            "controllerPodLabels": {"type": "object", "minProperties": 1, "maxProperties": 32, "additionalProperties": {"type": "string", "maxLength": 63}}
+          }
+        },
+        "backup": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "endpoint": {"$ref": "#/definitions/identity"},
+            "repository": {"$ref": "#/definitions/repository"},
+            "readerSecret": {"$ref": "#/definitions/secretName"},
+            "writerSecret": {"$ref": "#/definitions/secretName"},
+            "schedule": {"type": "string", "minLength": 1, "maxLength": 128},
+            "timeZone": {"type": "string", "minLength": 1, "maxLength": 128},
+            "suspend": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "endpoint": {"$ref": "#/definitions/identity"},
+        "repository": {"$ref": "#/definitions/repository"},
+        "readerSecret": {"$ref": "#/definitions/secretName"},
+        "writerSecret": {"$ref": "#/definitions/secretName"}
+      }
+    },
+    "identity": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
+    "secretName": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"},
+    "optionalSecretName": {"type": "string", "maxLength": 253, "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"},
+    "repository": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^rest:https://[^/@?#]+(/[^?#]*)?$"}
+  }
+}

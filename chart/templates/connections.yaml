@@ -1,0 +1,67 @@
+{{- if eq .Values.renderMode "connections" }}
+{{- $service := include "keycloak.service" . | fromYaml }}
+{{- $instance := (include "keycloak.selection" . | fromYaml).instance }}
+{{- $backup := $service.backup }}
+{{- $requested := true }}
+{{- if hasKey $backup "enabled" }}
+  {{- $requested = $backup.enabled }}
+{{- end }}
+{{- $requirements := dict
+  "database" (dict "sources" (list "generated" "external") "keys" (list "username" "password" "database") "requiredFor" (list "databaseAccess"))
+  "databaseAdmin" (dict "sources" (list "generated" "external") "keys" (list "username" "password") "requiredFor" (list "databaseProvisioning"))
+}}
+{{- $bindings := dict
+  "database" (dict "secretName" $service.database.secretName)
+  "databaseAdmin" (dict "secretName" $service.database.adminSecretName)
+}}
+{{- if $service.bootstrapAdminSecret }}
+  {{- $_ := set $requirements "bootstrapAdmin" (dict "sources" (list "generated" "external") "keys" (list "username" "password") "requiredFor" (list "freshInitialization")) }}
+  {{- $_ := set $bindings "bootstrapAdmin" (dict "secretName" $service.bootstrapAdminSecret) }}
+{{- end }}
+{{- if $requested }}
+  {{- range $role, $boundary := dict "backupReader" "recovery" "backupWriter" "capture" }}
+    {{- $_ := set $requirements $role (dict "sources" (list "external" "recovered") "keys" (list "password" "username" "restPassword") "optionalKeys" (list "ca.crt") "requiredFor" (list $boundary)) }}
+  {{- end }}
+  {{- $_ := set $bindings "backupReader" (dict "secretName" $backup.readerSecret) }}
+  {{- $_ := set $bindings "backupWriter" (dict "secretName" $backup.writerSecret) }}
+{{- end }}
+{{- if or $service.ingress.enabled $service.tls.managed }}
+  {{- $sources := list "external" "recovered" }}
+  {{- if $service.tls.managed }}{{- $sources = list "cert-manager" }}{{- end }}
+  {{- $_ := set $requirements "tls" (dict "sources" $sources "keys" (list "tls.crt" "tls.key") "requiredFor" (list "httpsIngress")) }}
+  {{- $_ := set $bindings "tls" (dict "secretName" $service.ingress.tlsSecretName) }}
+{{- end }}
+services:
+  {{ $instance | quote }}:
+    endpoints:
+      https:
+        url: {{ include "keycloak.hostname" $service | quote }}
+        hostname: {{ $service.hostname | quote }}
+        ingressEnabled: {{ $service.ingress.enabled }}
+        ingressClass: {{ $service.ingress.className | quote }}
+        controllerNamespace: {{ $service.ingress.controllerNamespace | quote }}
+        tlsManaged: {{ $service.tls.managed }}
+    oidc:
+      issuer: {{ include "keycloak.issuer" $service | quote }}
+backup:
+  requests:
+    {{ $instance | quote }}:
+      enabled: {{ $requested }}
+      {{- if $requested }}
+      {{- with $backup.endpoint }}
+      endpoint: {{ . | quote }}
+      {{- end }}
+      {{- with $backup.repository }}
+      repository: {{ . | quote }}
+      {{- end }}
+      readerSecret: {{ $backup.readerSecret | quote }}
+      writerSecret: {{ $backup.writerSecret | quote }}
+      {{- end }}
+credentials:
+  requirements:
+    {{ $instance | quote }}:
+      {{- toYaml $requirements | nindent 6 }}
+  bindings:
+    {{ $instance | quote }}:
+      {{- toYaml $bindings | nindent 6 }}
+{{- end }}

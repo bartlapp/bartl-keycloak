@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["installation", "renderMode", "services"],
+  "$comment": "Selected deployment, package, intent, services.<instance> and resolved.backup.bindings.<instance> are validated by keycloak.validate against interface.schema.json; unrelated entries are not Keycloak inputs.",
+  "properties": {
+    "installation": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
+    "instance": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
+    "deployment": {"type": "string", "maxLength": 128, "pattern": "^$|^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
+    "renderMode": {"type": "string", "enum": ["deployment", "connections"]},
+    "dns": {"type": "object", "additionalProperties": true, "properties": {"root": {"type": "string", "minLength": 1, "maxLength": 239, "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"}}},
+    "services": {"type": "object"},
+    "identity": false,
+    "configuration": false,
+    "application": false,
+    "database": false,
+    "bootstrapAdminSecret": false,
+    "ingress": false,
+    "backup": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository": false,
+        "readerSecret": false,
+        "writerSecret": false,
+        "schedule": false,
+        "timeZone": false,
+        "suspend": false
+      }
+    }
+  }
+}

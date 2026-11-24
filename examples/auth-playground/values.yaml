@@ -1,0 +1,15 @@
+# Required installation inputs. Create both Secrets in the release namespace.
+host: ""
+tlsSecret: ""
+existingSecret: auth-playground-env
+# The single lab node's public IPv4 address, used by Keycloak's HTTPS DNS record.
+keycloakIPv4: ""
+
+# Initial budget for one learner, not a measured capacity guarantee.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

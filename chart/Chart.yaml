@@ -1,0 +1,10 @@
+apiVersion: v2
+name: bartl-keycloak
+description: Namespace-local Keycloak application controller and operating intent
+type: application
+version: 0.8.0
+appVersion: "26.6.2"
+kubeVersion: ">=1.30.0-0"
+annotations:
+  keycloak.bartl.sh/crd-revision: "3"
+  keycloak.bartl.sh/supported-api: keycloak.bartl.sh/v1alpha1

@@ -1,0 +1,69 @@
+{{- if eq .Values.renderMode "deployment" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-controller
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-controller
+    spec:
+      serviceAccountName: keycloak-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: {{ include "keycloak.controllerImage" . | quote }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=0
+          env:
+            - name: WATCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: APPLICATION_NAME
+              value: keycloak
+            - name: CONTROLLER_IMAGE
+              value: {{ include "keycloak.controllerImage" . | quote }}
+            - name: KEYCLOAK_IMAGE
+              value: quay.io/keycloak/keycloak:26.6.2@sha256:f9ba7b2af90db8dc749a57ca9aedca51e840cb9224441ab546a968da941da900
+            - name: POSTGRES_IMAGE
+              value: docker.io/library/postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+            - name: BACKUP_IMAGE
+              value: {{ include "keycloak.backupImage" . | quote }}
+          ports:
+            - name: health
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+{{- end }}

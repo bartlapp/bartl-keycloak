@@ -1,0 +1,13 @@
+**
+!Dockerfile
+!Backup.Dockerfile
+!LICENSE
+!NOTICE
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!api/
+!api/**
+!internal/
+!internal/**

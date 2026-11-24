@@ -1,0 +1,33 @@
+{{- if eq .Values.renderMode "deployment" }}
+{{- if ne .Release.Name "keycloak" }}
+{{- fail "This profile requires Helm release name keycloak, one release per namespace." }}
+{{- end }}
+{{- $service := include "keycloak.service" . | fromYaml }}
+{{- $backup := include "keycloak.backup" (dict "root" . "service" $service) | fromYaml }}
+apiVersion: keycloak.bartl.sh/v1alpha1
+kind: KeycloakApplication
+metadata:
+  name: keycloak
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  identity:
+    installation: {{ .Values.installation | quote }}
+    instance: {{ (include "keycloak.selection" . | fromYaml).instance | quote }}
+  packageRelease: {{ .Chart.Version | quote }}
+  configuration:
+    hostname: {{ include "keycloak.hostname" $service | quote }}
+  application:
+    {{- toYaml $service.application | nindent 4 }}
+  database:
+    {{- toYaml $service.database | nindent 4 }}
+  {{- with $service.bootstrapAdminSecret }}
+  bootstrapAdminSecret: {{ . | quote }}
+  {{- end }}
+  ingress:
+    {{- toYaml $service.ingress | nindent 4 }}
+  {{- if $backup.enabled }}
+  backup:
+    {{- toYaml (omit $backup "enabled" "endpoint") | nindent 4 }}
+  {{- end }}
+{{- end }}

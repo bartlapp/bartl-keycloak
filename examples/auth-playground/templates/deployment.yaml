@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: playground
+          image: ghcr.io/authlib/auth-playground:0.1.7@sha256:df8bbe6eb2e33bb860dce03b3472df6241ecb90935f20d267bc9a78eec776f0d
+          imagePullPolicy: IfNotPresent
+          # Use the upstream factory unchanged; trust only the TLS Traefik hop.
+          command: ["python", "-c"]
+          args:
+            - |
+              from auth_playground import create_app
+              from werkzeug.middleware.proxy_fix import ProxyFix
+              app = create_app()
+              app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+              app.config["DEFAULT_AUTHORIZE_PARAMS"] = {"scope": "openid profile email"}
+              app.wsgi_app = ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=0, x_port=0, x_prefix=0)
+              app.run(host="0.0.0.0", port=4000, debug=False, use_reloader=False)
+          env:
+            - name: SERVER_NAME
+              value: {{ .Values.host | quote }}
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: FLASK_DEBUG
+              value: "False"
+{{- range $key := list "SECRET_KEY" "OAUTH_AUTH_SERVER" "OAUTH_CLIENT_ID" "OAUTH_CLIENT_SECRET" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.existingSecret }}
+                  key: {{ $key }}
+{{- end }}
+          ports:
+            - name: http
+              containerPort: 4000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: {{ .Values.host | quote }}
+                - name: X-Forwarded-Proto
+                  value: https
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: temporary
+          emptyDir:
+            sizeLimit: 64Mi
