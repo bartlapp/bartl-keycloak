@@ -444,7 +444,7 @@ Follow the [recovery and replacement runbook](RECOVERY.md) for reconstruction on
 
 Recovery preserves native Keycloak session behavior; it does not force logout or advance realm revocation cutoffs. Authentication and authorization state comes from the selected backup, so later session revocations, password changes, account disablements and permission changes may be lost. For security-incident recovery, reconcile affected identities and access before opening service. Private startup, verified reconstruction and source retirement remain required.
 
-Remove any explicit `services.<instance>.recoveryAdminSecret` from retained values when adopting the successor; the chart rejects the obsolete input. CRD revision 3 removes that field. Helm does not upgrade an existing CRD: review coexistence with older controllers before applying it to a shared cluster. Keep operator administrator access independently; remove an old runtime Secret only after no remaining deployment consumes it.
+Remove any explicit `services.<instance>.recoveryAdminSecret` from retained values when adopting the successor; the chart rejects the obsolete input. CRD revision 3 removes that field. CRDs are cluster-wide: Helm 4.3.2's server-side-apply install can reconcile an existing definition, so inspect the resulting schema and compatibility with every remaining controller before coexistence. Do not assume a new namespace isolates the CRD. Keep operator administrator access independently; remove an old runtime Secret only after no remaining deployment consumes it.
 
 ## Troubleshooting and operations
 

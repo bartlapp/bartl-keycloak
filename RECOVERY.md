@@ -136,7 +136,7 @@ direnv allow "$TARGET_DIR"
 
 The target selector is prepared and approved, but not entered. A reachable source remains selected for final capture and retirement. Package entries are immutable release identities: a replacement gets a new package key rather than rewriting the source's entry.
 
-On a shared cluster, the target release must support the installed CRD; Helm does not update existing CRDs. See the release's compatibility information before interrupting the source.
+On a shared cluster, source and target must support the CRD that will remain installed. Helm 4.3.2's server-side-apply install can update an existing cluster-wide definition; a separate namespace does not isolate this change. Inspect installed and target CRD revisions before interruption. An older package using a removed field may be rejected by schema admission before native startup; do not disable validation to bypass that refusal.
 
 Choose the administrator's actual source CIDR for restricted acceptance. Ingress must preserve client IPs and enforce the allowlist without direct-service, NodePort or alternate-ingress bypass; maintenance restricts both login and administration.
 
@@ -342,11 +342,15 @@ Confirm retirement of every source write path, including a returning predecessor
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
   --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
-curl --fail --silent --show-error "$KC_URL/realms/master/.well-known/openid-configuration" \
+curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 2 \
+  --retry-max-time 60 --max-time 10 "$KC_URL/realms/master/.well-known/openid-configuration" \
   -o "$INSTALL_DIR/restored-discovery.json"
 jq -e --arg issuer "$KC_URL/realms/master" '.issuer == $issuer' "$INSTALL_DIR/restored-discovery.json"
 ```
+
+The HTTPS probe allows the ingress controller to apply the new route after application reconciliation. It still requires trusted TLS and HTTP success; persistent failure blocks acceptance.
 
 Require current-generation Ready, trusted TLS and unchanged issuer. From the allowed address, log in with the retained recovery administrator in a fresh browser session. From an independent ordinary address, verify that ordinary login and administration are denied. Check restored realm/client/user IDs and fresh MFA/OIDC/PKCE login. Keep production outbound effects isolated; allow only dependencies needed for the test.
 
@@ -375,6 +379,7 @@ yq -i '
 ' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
   --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
 
 Verify current-generation Ready and normal client access. Record the active deployment, resolved package version, recovery time, selected point, storage identities and acceptance results in the installation record. Retain both receipts and protected target inputs. Keep the source stopped until retention or destruction is authorized.

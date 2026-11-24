@@ -135,10 +135,13 @@ async function bypassScenario(){
 async function downgradeScenario(){
  assert.equal(sql(source,'SELECT version FROM migration_model ORDER BY update_time DESC LIMIT 1'),'26.6.2');const before=sql(source,"SELECT count(*) FROM user_entity");const active=routes();assert(!active.includes(source));
  const values=await load(source+'-values');values.backup=backupConfig;values.ingress.enabled=false;await save('baseline-downgrade-values',values);
- run('helm',['upgrade','keycloak',cfg.baselineChart,'--kubeconfig',cfg.kubeconfig,'-n',source,'--reset-values','-f',path.join(state,'baseline-downgrade-values.json'),'--wait=legacy','--timeout','10m']);
- await until('downgrade refusal',()=>app(source),a=>condition(a,'Degraded'));
+ let admissionRefused=false;
+ try{run('helm',['upgrade','keycloak',cfg.baselineChart,'--kubeconfig',cfg.kubeconfig,'-n',source,'--reset-values','-f',path.join(state,'baseline-downgrade-values.json'),'--wait=legacy','--timeout','10m'])}
+ catch(error){if(!String(error.stderr).includes('.spec.recoveryAdminSecret'))throw error;admissionRefused=true}
+ if(admissionRefused)assert.equal(app(source).spec.packageRelease,cfg.candidateRelease);
+ else await until('downgrade refusal',()=>app(source),a=>condition(a,'Degraded'));
  assert.equal(json('-n',source,'get','deployment/keycloak').spec.replicas,0);assert.equal(sql(source,'SELECT version FROM migration_model ORDER BY update_time DESC LIMIT 1'),'26.6.2');assert.equal(sql(source,"SELECT count(*) FROM user_entity"),before);assert.deepEqual(routes(),active);
- return{nativeVersion:'26.6.2',oldPackageRefused:true,noApplicationProcess:true,dataUnchanged:true};
+ return{nativeVersion:'26.6.2',oldPackageRefused:true,admissionRefused,noApplicationProcess:true,dataUnchanged:true};
 }
 async function restoreSourceScenario(){await install(source,{backup:true,route:false});assert.equal(sql(source,'SELECT version FROM migration_model ORDER BY update_time DESC LIMIT 1'),'26.6.1');assert.deepEqual(routes(),[]);intent(source,{'ingress.enabled':true});await ready(source);return boundary(source)}
 async function openCandidateScenario(){const ns='kc-a5-upgraded-replacement',before=workload(ns);intent(ns,{'ingress.maintenance':false,'backup.suspend':false},cfg.candidateChart);await ready(ns);assert.deepEqual(workload(ns),before);await oidc();const external=externalHTTP();assert.equal(external,'200');const capture=await backup(ns,'candidate');assert.equal(capture.applicationUID,app(ns).metadata.uid);assert.equal(capture.packageRelease,cfg.candidateRelease||'0.6.1');return{namespace:ns,normalUserHTTP:external,snapshot:capture.snapshotID,backupApplicationUID:capture.applicationUID,routingOnlyUnchanged:true}}

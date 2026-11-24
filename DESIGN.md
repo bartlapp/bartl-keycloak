@@ -118,6 +118,17 @@ The regression creates/removes its own database and role; without the variable i
 
 Prepare ready source `kc-a4-source` with trusted HTTPS and TLS Secret `kc-a4-tls`. Initialize the separate repository at `rest:https://backup-store.kc-a4-repository.svc/keycloak/`, with an append-only writer and a data-read-only, lock-writable reader, including exact lock-object permissions on refusal paths. Import candidate images before running. Retain the exact private fixture setup and diagnostics with the qualification artifacts, outside Git.
 
+For a controller OCI archive already transferred to a qualification node, set `CONTROLLER_ARCHIVE` to its verified absolute path and use a fully qualified import base:
+
+```bash
+k3s ctr images import --base-name ghcr.io/bartlapp/bartl-keycloak-controller \
+  --digests --skip-digest-for-named "$CONTROLLER_ARCHIVE"
+```
+
+Use the corresponding repository base for other operating images. Verify actual container admission before starting stateful qualification; an image listing alone is insufficient. Unqualified auto-generated import names can leave an unusable CRI reference. This is local fixture preparation, not a reason to alter the qualified manifest or bypass registry/TLS checks.
+
+Helm 4.3.2 passes its default server-side-apply setting to [CRD installation](https://github.com/helm/helm/blob/v4.3.2/pkg/action/install.go). The live migration fixture observed revision 2 become revision 3 when the replacement release was installed. Preserve schema-admission refusal as a valid unsupported-package boundary, together with explicit checks that data and active routing remain unchanged.
+
 Invoke scenarios individually against their prepared fixture state; this list is not a replay/repair script:
 
 ```bash
