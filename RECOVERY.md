@@ -4,7 +4,7 @@ Use this runbook for reconstruction on independent empty storage, replacement an
 
 ## Before starting
 
-Use workstation Bash and the [README prerequisites](README.md#prerequisites): approved installation/cluster context, operator tools and compatible backup access. Have the independently retained `installation.yaml`, protected credentials, recovered-realm administrator, backup receipts/history and encryption key available. The target cluster must already be prepared and independently accessible through its approved selector. For a missing deployment selector, follow [Base's adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector); keep a compatible root loader unchanged.
+Use workstation Bash and the [README prerequisites](README.md#prerequisites): approved installation/cluster context, operator tools and compatible backup access. Have the independently retained `installation.yaml`, protected credentials, recovered-realm administrator, backup receipts/history and encryption key available. The target cluster must already be prepared and independently accessible through its retained selector.
 
 Run the sequence in one workstation Bash session; wait for a new shell prompt after each directory change so direnv selects the recorded context. Do not run the reachable-source branch against a lost source. The examples use the ordinary ACME paths; select the actual retained directories and recorded keys for the installation.
 
@@ -272,7 +272,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret tls "$TLS_SECRET" \
 
 Retain the new target credentials independently. With managed TLS, cert-manager creates the TLS Secret.
 
-Before restricted acceptance, follow [Base's client-address preservation procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#preserve-client-addresses-for-restricted-access) with the target context selected, then continue here in the same deployment directory. Verify allowed and denied access through the application route before activation.
+The target ingress must preserve real client addresses for restricted acceptance. Base establishes this during provisioning; an externally supplied cluster must provide equivalent behavior. Verify allowed and denied access through the application route before activation.
 
 #### 4. Route DNS, install and inspect reconstruction
 

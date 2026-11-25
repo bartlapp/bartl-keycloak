@@ -17,9 +17,9 @@ These instructions target stable release [0.8.0](https://github.com/bartlapp/bar
 
 Use workstation Bash with the [operator tools](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#check-the-workstation). Run the commands on the workstation unless a step names another location.
 
-Start with a cluster prepared through the [K3s base installation](https://github.com/bartlapp/base-k3s/blob/main/README.md).
+Start with a cluster prepared through the [K3s base installation](https://github.com/bartlapp/base-k3s/blob/main/README.md), or prepare [supplied access to a compatible cluster](https://github.com/bartlapp/bartl-app/blob/main/docs/operator-workstation.md#use-supplied-cluster-access).
 
-For an existing deployment without a selector, use [Base's selector-adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector). It refreshes the root loader only if incompatible. Directory entry selects recorded context; chart acquisition remains explicit.
+Directory entry selects retained context; chart acquisition remains explicit.
 
 For backup, supply a compatible HTTPS Restic repository and its protected inputs.
 
@@ -309,8 +309,6 @@ cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1/appl
 ```
 
 For a nested replacement, enter its `applications/<instance>/deployments/<deployment>` directory instead. Wait for the next shell prompt: direnv loads cluster access and the recorded deployment/package through its approved selector. Do not select a deployment by exporting its key.
-
-For an existing directory without a selector, first [adopt its deployment selector](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector), then enter the deployment directory again.
 
 Acquire the recorded chart only if its cache is absent, then render connections. A pull becomes visible in `CHART` only after successful extraction:
 
