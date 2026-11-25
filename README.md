@@ -60,7 +60,7 @@ After choosing the package key below, promote the complete chart to its version-
 
 ### Configure the installation
 
-Choose unused deployment, instance and package keys and a new namespace. `INSTANCE` identifies the logical Keycloak service; `DEPLOYMENT` identifies this placement. The supported Helm release name is `keycloak`, one per namespace.
+Choose unused deployment and instance keys and a new namespace. Reuse a package key only when its recorded chart and version match the acquired artifact; otherwise choose an unused package key. `INSTANCE` identifies the logical Keycloak service; `DEPLOYMENT` identifies this placement. The supported Helm release name is `keycloak`, one per namespace.
 
 The compound command records the choices, creates the selector and enters the deployment directory before direnv reloads at the next prompt. An ordinary deployment uses the instance directory; a different deployment key uses a nested replacement directory. The selector contains no copied configuration.
 
@@ -72,15 +72,18 @@ export NS=keycloak-blue
 export RELEASE=keycloak
 export PACKAGE=keycloak
 
+yq -e '.packages[strenv(PACKAGE)] == null or
+  (.packages[strenv(PACKAGE)].version == strenv(PACKAGE_VERSION) and
+   .packages[strenv(PACKAGE)].chart == "oci://ghcr.io/bartlapp/bartl-keycloak")' "$VALUES" >/dev/null
 yq -i '
   .deployments[strenv(DEPLOYMENT)] = {
     "instance": strenv(INSTANCE), "cluster": strenv(CLUSTER_ID),
     "namespace": strenv(NS), "release": strenv(RELEASE), "package": strenv(PACKAGE)
   } |
   .services[strenv(INSTANCE)] = {} |
-  .packages[strenv(PACKAGE)] = {
+  .packages[strenv(PACKAGE)] = (.packages[strenv(PACKAGE)] // {
     "version": strenv(PACKAGE_VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-keycloak"
-  }
+  })
 ' "$VALUES"
 DEPLOYMENT_DIR="$WORK_DIR/clusters/$CLUSTER_ID/applications/$INSTANCE"
 if [ "$DEPLOYMENT" = "$INSTANCE" ]; then

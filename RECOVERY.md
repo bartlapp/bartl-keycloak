@@ -84,7 +84,7 @@ SOURCE_INSTANCE=$(SOURCE_DEPLOYMENT="$SOURCE_DEPLOYMENT" yq -er '.deployments[st
 
 Use retained source PVC/PV identities where available. A return is possible only after restoring the source directory's approved selector and independent cluster access; a protected-input copy alone is not a source context.
 
-**Choose the target.** From either branch, choose unused deployment and package keys, a supplied cluster and a fresh namespace. Download the latest release before interrupting a reachable source; keep its selected chart and package entry unchanged:
+**Choose the target.** From either branch, choose an unused deployment key, a supplied cluster and a fresh namespace. Download the latest release before interrupting a reachable source; reuse an existing matching package entry and choose an unused package key only for a different artifact. Keep the source's selected chart and package entry unchanged:
 
 ```bash
 set -euo pipefail
@@ -99,10 +99,17 @@ TARGET_CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
 helm pull oci://ghcr.io/bartlapp/bartl-keycloak --untar --untardir "$TARGET_CHART_STAGE"
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_CHART_STAGE/bartl-keycloak" | yq -er '.version')
 export TARGET_PACKAGE_VERSION
+MATCHING_PACKAGE=$(yq -o=json '.packages // {}' "$VALUES" |
+  jq -r --arg version "$TARGET_PACKAGE_VERSION" '[to_entries[] |
+    select(.value.chart == "oci://ghcr.io/bartlapp/bartl-keycloak" and .value.version == $version) | .key][0] // empty')
+if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
+yq -e '.packages[strenv(TARGET_PACKAGE)] == null or
+  (.packages[strenv(TARGET_PACKAGE)].version == strenv(TARGET_PACKAGE_VERSION) and
+   .packages[strenv(TARGET_PACKAGE)].chart == "oci://ghcr.io/bartlapp/bartl-keycloak")' "$VALUES" >/dev/null
 SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i '
-  .packages[strenv(TARGET_PACKAGE)] = {
+  .packages[strenv(TARGET_PACKAGE)] = (.packages[strenv(TARGET_PACKAGE)] // {
     "version": strenv(TARGET_PACKAGE_VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-keycloak"
-  } |
+  }) |
   .deployments[strenv(TARGET_DEPLOYMENT)] = {
     "instance": strenv(SOURCE_INSTANCE), "cluster": strenv(TARGET_CLUSTER),
     "namespace": strenv(TARGET_NAMESPACE), "release": "keycloak", "package": strenv(TARGET_PACKAGE)
@@ -131,7 +138,7 @@ rm -r "$TARGET_CHART_STAGE"
 direnv allow "$TARGET_DIR"
 ```
 
-The target selector is prepared and approved, but not entered. A reachable source remains selected for final capture and retirement. Package entries are immutable release identities: a replacement gets a new package key rather than rewriting the source's entry.
+The target selector is prepared and approved, but not entered. A reachable source remains selected for final capture and retirement. Package entries are immutable release identities: reuse an exact match, and give a different artifact a new package key rather than rewriting the source's entry.
 
 On a shared cluster, source and target must support the CRD that will remain installed. Helm 4.3.2's server-side-apply install can update an existing cluster-wide definition; a separate namespace does not isolate this change. Inspect installed and target CRD revisions before interruption. An older package using a removed field may be rejected by schema admission before native startup; do not disable validation to bypass that refusal.
 
