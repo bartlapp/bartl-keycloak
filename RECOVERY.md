@@ -4,7 +4,7 @@ Use this runbook for reconstruction on independent empty storage, replacement an
 
 ## Before starting
 
-Use workstation Bash and the [README prerequisites](README.md#prerequisites): approved installation/cluster context, operator tools and compatible backup access. Have the independently retained `installation.yaml`, protected credentials, recovered-realm administrator, backup receipts/history and encryption key available. The target cluster must already be prepared and independently accessible through its approved selector. If the installation predates deployment selectors, first [refresh its Base context and adopt selectors](https://github.com/bartlapp/base-k3s#refresh-an-existing-installations-context).
+Use workstation Bash and the [README prerequisites](README.md#prerequisites): approved installation/cluster context, operator tools and compatible backup access. Have the independently retained `installation.yaml`, protected credentials, recovered-realm administrator, backup receipts/history and encryption key available. The target cluster must already be prepared and independently accessible through its approved selector. For a missing deployment selector, follow [Base's adoption procedure](https://github.com/bartlapp/base-k3s/blob/main/README.md#adopt-a-missing-deployment-selector); keep a compatible root loader unchanged.
 
 Run the sequence in one workstation Bash session; wait for a new shell prompt after each directory change so direnv selects the recorded context. Do not run the reachable-source branch against a lost source. The examples use the ordinary ACME paths; select the actual retained directories and recorded keys for the installation.
 
