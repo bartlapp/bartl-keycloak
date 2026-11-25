@@ -6,7 +6,7 @@ The [README](README.md) and linked [recovery runbook](RECOVERY.md) own operation
 
 Current stable release: `0.8.0`, Keycloak 26.6.2, PostgreSQL 17.6, Restic 0.19.1 and CRD revision 3. It removes the recovery-administrator input and forced session invalidation. Native migration supports Keycloak 26.6.1 → 26.6.2, not downgrades or PostgreSQL major upgrades. Governing contract/guide revision: `bartl-app` `e891fac99edb16a5349b6e86577dbdab7720f108`.
 
-The README uses Base's shared `load_deployment` context: each deployment directory sources its cluster `.envrc` and selects one recorded deployment. The loader checks cluster and directory identity and exports placement plus the normalized `$WORK_DIR/packages/<package>/<version>` chart root without network access. Existing installations require an intentional Base root-context refresh and one-time selector creation; no manual-export compatibility path is maintained.
+The README uses Base's shared `load_deployment` context: each deployment directory sources its cluster `.envrc` and selects one recorded deployment. The loader checks cluster and directory identity and exports placement plus the normalized `$WORK_DIR/packages/<package>/<version>` chart root without network access. Current creation procedures generate the selectors; resumption uses retained selectors rather than a context-migration procedure.
 
 Chart acquisition remains explicit. Fresh/replacement operations resolve the latest stable release, retain a new immutable package entry and promote the extracted chart from disposable staging into its package/version cache only after a successful pull. Routine operation reuses that cache or pulls the recorded version. Target preparation does not select the target before source retirement; bounded return explicitly re-enters the retained source directory.
 
@@ -16,7 +16,7 @@ Native-session development candidate `0.8.0-dev.1` verification on 2026-11-24 us
 
 The restored candidate completed without bootstrap or recovery-administrator Secrets while the source controller and database were unavailable. Realm/user/signing identity and real OIDC/PKCE were preserved; still-valid captured online/offline refresh tokens remained usable without changing the realm cutoff. Browser administrator login also succeeded. Interrupted rollback, duplicate workers and lost acknowledgement retained refusal/stop boundaries; a fresh independent retry succeeded. New work survived a subsequent capture and reconstruction. Existing-state restart worked without reader, bootstrap or database-administrator Secrets. After retiring the historical controller, CRD revision 3 and both empty-state initialization branches were exercised with trusted HTTPS administrator access.
 
-This establishes functional recovery and exclusion on distinct claims, not survival of the shared host or provider. Qualification inputs, raw results and these exact artifacts remain in private artifact custody; they are not included in this public source snapshot:
+This establishes functional recovery and exclusion on distinct claims, not survival of the shared host or provider. The following identities describe the tested historical candidate; its disposable private lab workspace is not a current recovery input. Stable delivery and selected qualification evidence are retained in the release record:
 
 | Artifact | SHA-256 |
 | --- | --- |
@@ -25,7 +25,7 @@ This establishes functional recovery and exclusion on distinct claims, not survi
 | Implementation source archive | `15f1f323c98f67a4e791b3f71e8e12fd31d4ccc7c69606861b57b1ec298ee013` |
 | Retained controller OCI archive | `5070e65b840b868f940d0bd723d390ba47679bc7263126c7f76cdec6d1548f58` |
 
-The worker, its dedicated firewall and both primary IP allocations were deleted after qualification. The sole test hostname was removed and both authoritative DNS servers confirmed absence; the shared zone and operator identity were retained. Private fixture access files are archival, not a live environment.
+The worker, its dedicated firewall and both primary IP allocations were deleted after qualification. The sole test hostname was removed and both authoritative DNS servers confirmed absence; the shared zone and operator identity were retained. The private fixture access files were disposable lab inputs, not a live environment.
 
 Local verification on 2026-11-23 exercised real direnv entry, source/target switching, subdirectory inheritance, watched-record reload, parent-context clearing, prior-environment restoration and wrong-cluster/directory refusal. Native Helm/yq against a loopback OCI fixture exercised the README's creation and replacement blocks across prompt reloads, version-specific cache reuse with the registry unavailable, failed-pull invisibility, recorded-version reacquisition and source return. Lost-source preparation succeeded without a source cluster directory or kubeconfig. Template ignore checks retained selectors without exposing runtime credentials. These are local context/acquisition checks, not runtime migration, recovery or public-registry qualification. Original historical records remain privately archived; selected public qualification belongs in the [release records](https://github.com/bartlapp/bartl-keycloak/releases).
 

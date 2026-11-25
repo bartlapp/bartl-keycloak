@@ -4,7 +4,7 @@ Use this runbook for reconstruction on independent empty storage, replacement an
 
 ## Before starting
 
-Use workstation Bash and the [README prerequisites](README.md#prerequisites): approved installation/cluster context, operator tools and compatible backup access. Have the independently retained `installation.yaml`, protected credentials, recovered-realm administrator, backup receipts/history and encryption key available. The target cluster must already be prepared and independently accessible through its retained selector.
+Use workstation Bash and the [README prerequisites](README.md#prerequisites): retained installation/cluster context, operator tools and compatible backup access. Have the independently retained `installation.yaml`, protected database/repository inputs, administrator access to the recovered realm, backup history and encryption key available. The target cluster must already be prepared and independently accessible through its retained selector.
 
 Run the sequence in one workstation Bash session; wait for a new shell prompt after each directory change so direnv selects the recorded context. Do not run the reachable-source branch against a lost source. The examples use the ordinary ACME paths; select the actual retained directories and recorded keys for the installation.
 
@@ -34,7 +34,9 @@ For secondary recovery, use that repository's URL, credentials, encryption key a
 
 #### 1. Retain source inputs and choose the target
 
-For a reachable source, enter its actual deployment directory; for the ordinary example:
+Choose exactly one source branch below, then continue at **Choose the target**.
+
+**Reachable source.** Enter its actual deployment directory; for the ordinary example:
 
 ```bash
 cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1/applications/keycloak"
@@ -68,14 +70,9 @@ Retain the selected source context:
 SOURCE_DEPLOYMENT=$DEPLOYMENT
 SOURCE_INSTANCE=$INSTANCE
 SOURCE_DIR=$INSTALL_DIR
-SOURCE_KUBECONFIG=$KUBECONFIG
-SOURCE_CTX=$KUBE_CONTEXT
-SOURCE_NS=$NS
-SOURCE_RELEASE=$RELEASE
-SOURCE_CHART=$CHART
 ```
 
-For a lost source, select the actual independently retained installation root and the source deployment key without contacting it. Set `SOURCE_DIR` to the independently recovered protected inputs and backup receipt; it need not be a usable source context. For the ordinary example:
+**Lost or already retired source.** Skip the reachable-source commands. Select the independently retained installation root and source deployment key without contacting it. Set `SOURCE_DIR` to the recovered database/repository inputs and backup receipt; it need not contain a usable source context. For the ordinary example:
 
 ```bash
 export WORK_DIR="${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation"
@@ -87,7 +84,7 @@ SOURCE_INSTANCE=$(SOURCE_DEPLOYMENT="$SOURCE_DEPLOYMENT" yq -er '.deployments[st
 
 Use retained source PVC/PV identities where available. A return is possible only after restoring the source directory's approved selector and independent cluster access; a protected-input copy alone is not a source context.
 
-Choose unused target deployment and package keys, a supplied cluster and a fresh namespace. Download the latest release before interrupting the source; keep the source's selected chart and package entry unchanged:
+**Choose the target.** From either branch, choose unused deployment and package keys, a supplied cluster and a fresh namespace. Download the latest release before interrupting a reachable source; keep its selected chart and package entry unchanged:
 
 ```bash
 set -euo pipefail
@@ -199,16 +196,15 @@ Select the full ID of the latest verified matching snapshot in the target reposi
 EXPECTED_SNAPSHOT=$(jq -er '.snapshotID' "$SOURCE_DIR/backup-result.json")
 ```
 
-For secondary recovery, use its verified destination snapshot ID and the corresponding repository URL and reader/writer inputs.
+For secondary recovery, select its verified destination snapshot ID as `EXPECTED_SNAPSHOT`, and update the configured repository URL and reader/writer Secret bindings in `installation.yaml` to that destination before continuing. Do not reuse a primary repository's snapshot ID or access credentials. The target connections below must describe the selected destination.
 
-After source retirement, switch an optional version assertion and remove the obsolete controller recovery-administrator input. This does not remove operator-held administrator access or delete any Secret still used by an older deployment:
+If the installation uses the optional service-version assertion, retain its source value and update it for the selected target package:
 
 ```bash
 SOURCE_SERVICE_RELEASE=$(SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -r '.services[strenv(SOURCE_INSTANCE)].release // ""' "$VALUES")
 if [ -n "$SOURCE_SERVICE_RELEASE" ]; then
   SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i '.services[strenv(SOURCE_INSTANCE)].release = strenv(TARGET_PACKAGE_VERSION)' "$VALUES"
 fi
-SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i 'del(.services[strenv(SOURCE_INSTANCE)].recoveryAdminSecret)' "$VALUES"
 ```
 
 Enter the prepared target **deployment** directory, keeping the same `VALUES`:
@@ -249,10 +245,9 @@ printf postgres > "$INSTALL_DIR/credentials/database-admin/username"
   openssl rand -hex 32 | tr -d '\n' > "$INSTALL_DIR/credentials/database/password"
   openssl rand -hex 32 | tr -d '\n' > "$INSTALL_DIR/credentials/database-admin/password"
 )
-cp -R "$SOURCE_DIR/recovery-admin" "$INSTALL_DIR/recovery-admin"
 ```
 
-Supply `INSTALL_DIR/repository/reader/` and `writer/` for the selected repository. Reuse retained source inputs only when the repository survives unchanged; secondary recovery needs its own access. The copied administrator credentials remain operator-held for browser acceptance; do not inject them into the restored application or controller.
+Supply `INSTALL_DIR/repository/reader/` and `writer/` for the selected repository. Reuse retained source inputs only when the repository survives unchanged; secondary recovery needs its own access. Keep administrator access to the recovered realm independently available for browser acceptance; it is not copied into the target or injected into the controller.
 
 ```bash
 for pair in credentials/database:database credentials/database-admin:databaseAdmin repository/reader:backupReader repository/writer:backupWriter; do
@@ -290,7 +285,8 @@ Point the authorized hostname at the target ingress if its address changed. Veri
 For deSEC, inspect the existing A record. Patch only a record owned by this service that still points at the retired source:
 
 ```bash
-export DNS_ZONE=acme.fke.systems
+export DNS_ZONE
+DNS_ZONE=${DNS_ZONE:-$(yq -er '.providers[.dns.provider].scope.zone // .dns.root' "$VALUES")}
 : "${DESEC_TOKEN:?Supply the authorized DNS token in the environment}"
 DNS_API="https://desec.io/api/v1/domains/$DNS_ZONE"
 DNS_SUBNAME=${KC_HOST%."$DNS_ZONE"}
@@ -352,7 +348,7 @@ jq -e --arg issuer "$KC_URL/realms/master" '.issuer == $issuer' "$INSTALL_DIR/re
 
 The HTTPS probe allows the ingress controller to apply the new route after application reconciliation. It still requires trusted TLS and HTTP success; persistent failure blocks acceptance.
 
-Require current-generation Ready, trusted TLS and unchanged issuer. From the allowed address, log in with the retained recovery administrator in a fresh browser session. From an independent ordinary address, verify that ordinary login and administration are denied. Check restored realm/client/user IDs and fresh MFA/OIDC/PKCE login. Keep production outbound effects isolated; allow only dependencies needed for the test.
+Require current-generation Ready, trusted TLS and unchanged issuer. From the allowed address, log in with the retained administrator in a fresh browser session. From an independent ordinary address, verify that ordinary login and administration are denied. Check restored realm/client/user IDs and the agreed login behavior, including MFA/OIDC/PKCE where configured. Keep production outbound effects isolated; allow only dependencies needed for the test.
 
 Create an authorized disposable user in a restored realm, reopen its details to verify a new write/read, then remove it. Produce a new complete point from the recovered application:
 
@@ -382,7 +378,7 @@ helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
 
-Verify current-generation Ready and normal client access. Record the active deployment, resolved package version, recovery time, selected point, storage identities and acceptance results in the installation record. Retain both receipts and protected target inputs. Keep the source stopped until retention or destruction is authorized.
+Verify current-generation Ready and normal client access. Record the active deployment, resolved package version, recovery time, selected point, storage identities and acceptance results in the installation record. Retain recovery-point identities and protected target inputs independently; the JSON/API output files used for these checks are disposable working files, not a permanent execution diary. Keep the source stopped until retention or destruction is authorized.
 
 #### Failure and bounded return to the source
 

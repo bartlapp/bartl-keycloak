@@ -26,8 +26,10 @@ For backup, supply a compatible HTTPS Restic repository and its protected inputs
 ## Select cluster access
 
 ```bash
-cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1"
+cd "$HOME/bartl/acme/acme-installation/clusters/cluster-1"
 ```
+
+Use the actual retained cluster directory. Continue at the next prompt, then check access:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" get nodes
@@ -115,7 +117,7 @@ TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$I
 INGRESS_NAMESPACE=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.controllerNamespace' "$INSTALL_DIR/connections.yaml")
 ```
 
-Supply credentials under `INSTALL_DIR` at the paths below; `installation.yaml` is the values file.
+Supply credentials under `INSTALL_DIR` at the paths below; `installation.yaml` is the values file. For an `acme.fke.systems` test installation, select Let's Encrypt staging under `services.<instance>.tls.acmeServer` and supply isolated staging trust to every test client; never disable TLS verification or change ordinary workstation trust. Production defaults remain unchanged.
 
 ### Prepare DNS
 
@@ -133,7 +135,8 @@ Point `KC_HOST` to `INGRESS_IPV4` at the authorized DNS provider. Reuse a matchi
 For deSEC, supply `DESEC_TOKEN` and select the zone. Inspect its current records:
 
 ```bash
-export DNS_ZONE=acme.fke.systems
+export DNS_ZONE
+DNS_ZONE=${DNS_ZONE:-$(yq -er '.providers[.dns.provider].scope.zone // .dns.root' "$VALUES")}
 : "${DESEC_TOKEN:?Supply the authorized DNS token in the environment}"
 DNS_API="https://desec.io/api/v1/domains/$DNS_ZONE"
 DNS_SUBNAME=${KC_HOST%."$DNS_ZONE"}
@@ -191,7 +194,7 @@ Retain credentials independently before relying on recovery; Kubernetes Secrets 
 
 Without a repository or resolved binding, backup is disabled. If none is selected, continue at [Install and inspect](#install-and-inspect).
 
-For backup, supply a per-instance initialized HTTPS Restic repository meeting the [backup boundary](https://github.com/bartlapp/bartl-app/blob/main/docs/application-contract.md#portable-recovery-artifact-and-storage-boundary). For a fresh instance it must contain no Keycloak history matching this installation and instance. An untagged synthetic endpoint-verification point does not match. Existing matching application history belongs in recovery, with its retained recovery administrator.
+For backup, supply a per-instance initialized HTTPS Restic repository meeting the [backup boundary](https://github.com/bartlapp/bartl-app/blob/main/docs/application-contract.md#portable-recovery-artifact-and-storage-boundary). For a fresh instance it must contain no Keycloak history matching this installation and instance. An untagged synthetic endpoint-verification point does not match. Existing matching application history belongs in recovery, with independently retained operator access.
 
 Supply the repository URL and access credentials; backup-service provisioning is separate:
 
@@ -267,7 +270,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o j
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get deployments,statefulsets,pods
 ```
 
-Helm waits for controller infrastructure; current-generation `Ready=True` and a fresh HTTPS login establish application usability. For a failed readiness check, inspect:
+The package performs database initialization, backup reconstruction when needed and native Keycloak migration internally. Do not run restore, realm import or migration commands by hand. Helm waits for controller infrastructure; current-generation `Ready=True` permits the HTTPS acceptance below. For a failed readiness check, inspect:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" logs deployment/keycloak -c keycloak --tail=80
@@ -284,21 +287,15 @@ cat "$INSTALL_DIR/credentials/bootstrap/username"; printf '\n'
 cat "$INSTALL_DIR/credentials/bootstrap/password"; printf '\n'
 ```
 
-Sign in through the HTTPS hostname in a fresh browser session and verify the administration console. Check the agreed useful behavior, including configured realm login, MFA and client redirects/token flow.
+Sign in through the HTTPS hostname in a fresh browser session with the bootstrap account and verify the administration console. This completes acceptance of an empty instance. For realms, MFA or clients you have configured, verify their agreed login and redirect/token behavior too; the advertised realm and issuer do not create a realm or client.
 
 ### Retain operating and recovery inputs
 
 Retain the installation record and protected credentials independently, together with backup history and its encryption key when backup is selected. The record identifies the package used; charts and images remain available from the registry.
 
-Retain administrator access to the backed-up realm for operator acceptance and subsequent administration, including any required MFA recovery material. This is not a runtime restore input: the controller does not require an administrator account or password grant. For a fresh instance whose initial credentials are still current:
+Retain administrator access to the backed-up realm, including required MFA recovery material, for browser acceptance and subsequent administration. Initially this may be the bootstrap account; update the retained access when accounts or credentials change. Fresh bootstrap credentials cannot administer restored state.
 
-```bash
-mkdir "$INSTALL_DIR/recovery-admin"
-cp "$INSTALL_DIR/credentials/bootstrap/username" "$INSTALL_DIR/recovery-admin/username"
-cp "$INSTALL_DIR/credentials/bootstrap/password" "$INSTALL_DIR/recovery-admin/password"
-```
-
-Update these operator-held files when that administrator account rotates. Fresh bootstrap credentials cannot administer restored state. Do not create a runtime recovery-administrator Secret.
+This is operator access, not a restore input. The controller requires neither an administrator account nor a password grant for reconstruction; do not create a runtime recovery-administrator Secret or duplicate credentials into a special recovery directory.
 
 ## Resume an existing deployment
 
@@ -309,6 +306,20 @@ cd "${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation/clusters/cluster-1/appl
 ```
 
 For a nested replacement, enter its `applications/<instance>/deployments/<deployment>` directory instead. Wait for the next shell prompt: direnv loads cluster access and the recorded deployment/package through its approved selector. Do not select a deployment by exporting its key.
+
+Continue at the next prompt:
+
+```bash
+set -euo pipefail
+umask 077
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
+```
+
+Context selection is complete. Status inspection, native restart and capture through an installed backup CronJob need no chart download or connection rendering. Continue directly with the selected operation.
+
+### Prepare the recorded chart for Helm operations
+
+Starting condition: the deployment is selected through [Resume an existing deployment](#resume-an-existing-deployment). Use this preparation for configuration changes, persistent stop/start, backup setup and removal, not routine status, restart or capture.
 
 Acquire the recorded chart only if its cache is absent, then render connections. A pull becomes visible in `CHART` only after successful extraction:
 
@@ -329,12 +340,13 @@ KC_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/
 KC_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/connections.yaml")
 TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/connections.yaml")
 INGRESS_NAMESPACE=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.controllerNamespace' "$INSTALL_DIR/connections.yaml")
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 ```
+
+Continue with the selected operation.
 
 ### Apply changes to a running deployment
 
-Starting condition: a running, Ready deployment with no admitted capture or transition still executing. Edit the intended retained fields, then repeat **Resume an existing deployment** to refresh context and declarations. For scheduling changes, preserve the current run and routing intent and apply:
+Starting condition: a running, Ready deployment with no admitted capture or transition still executing. [Resume it](#resume-an-existing-deployment), edit the intended retained fields, then [prepare its recorded chart](#prepare-the-recorded-chart-for-helm-operations) to refresh connections. Preserve the current run and routing intent and apply:
 
 ```bash
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
@@ -346,7 +358,7 @@ Use the dedicated stop, replacement and upgrade procedures for those operations.
 
 ### Restart Keycloak
 
-With the deployment selected:
+[Resume the deployment](#resume-an-existing-deployment) to select its context, then restart the existing workload without downloading a chart:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout restart deployment/keycloak
@@ -360,7 +372,7 @@ Verify a fresh login and existing realms, clients and users. Normal restart uses
 
 ### Persistently stop and start Keycloak
 
-Set persistent stop intent; scaling the workload alone is undone by the controller:
+[Resume the deployment](#resume-an-existing-deployment) and [prepare its recorded chart](#prepare-the-recorded-chart-for-helm-operations). Set persistent stop intent; scaling the workload alone is undone by the controller:
 
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
@@ -385,11 +397,11 @@ Verify a fresh login and retained data. Changing replicas does not clear a faile
 
 ## Enable backups and trigger one now
 
-Resume the deployment first. PostgreSQL must be running; Keycloak need not be running for capture.
+[Resume the deployment](#resume-an-existing-deployment) to select its context. PostgreSQL must be running; Keycloak need not be running for capture. With backup already configured, go directly to [Capture a backup](#capture-a-backup); routine capture needs neither chart acquisition nor a Helm update.
 
 ### Prepare or reuse backup access
 
-If no repository is configured, supply [external backup inputs](#external-backup-inputs). Reuse existing repository credentials and Secret references.
+[Prepare the recorded chart](#prepare-the-recorded-chart-for-helm-operations). If no repository is configured, supply [external backup inputs](#external-backup-inputs). Reuse existing repository credentials and Secret references.
 
 Enable backup; this overrides `backup.enabled: false` without changing its schedule or suspension:
 
@@ -411,15 +423,18 @@ for pair in reader:backupReader writer:backupWriter; do
 done
 ```
 
-Retain operator access to the backed-up realm independently for post-recovery acceptance. It is not required by the automatic restore/start procedure.
-
-### Capture a backup
-
-Apply the selected chart and capture:
+Retain operator access to the backed-up realm independently for post-recovery acceptance. It is not required by the automatic restore/start procedure. Apply the new backup configuration without changing run or routing intent:
 
 ```bash
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
   --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+```
+
+### Capture a backup
+
+[Resume the deployment](#resume-an-existing-deployment) if it is not already selected. With its backup CronJob installed, run these native commands; do not perform chart preparation:
+
+```bash
 JOB="keycloak-backup-$(date -u +%Y%m%d%H%M%S)"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create job "$JOB" --from=cronjob/keycloak-backup
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "job/$JOB" --for=condition=complete --timeout=30m
@@ -442,7 +457,7 @@ Follow the [recovery and replacement runbook](RECOVERY.md) for reconstruction on
 
 Recovery preserves native Keycloak session behavior; it does not force logout or advance realm revocation cutoffs. Authentication and authorization state comes from the selected backup, so later session revocations, password changes, account disablements and permission changes may be lost. For security-incident recovery, reconcile affected identities and access before opening service. Private startup, verified reconstruction and source retirement remain required.
 
-Remove any explicit `services.<instance>.recoveryAdminSecret` from retained values when adopting the successor; the chart rejects the obsolete input. CRD revision 3 removes that field. CRDs are cluster-wide: Helm 4.3.2's server-side-apply install can reconcile an existing definition, so inspect the resulting schema and compatibility with every remaining controller before coexistence. Do not assume a new namespace isolates the CRD. Keep operator administrator access independently; remove an old runtime Secret only after no remaining deployment consumes it.
+On a shared cluster, every remaining controller must support the installed CRD. Helm 4.3.2's server-side-apply install can update the cluster-wide definition; a new namespace does not isolate that change. Check source/target CRD compatibility before replacement. Historical release inputs remain governed by their release instructions, not an automatic conversion step here.
 
 ## Troubleshooting and operations
 
@@ -464,7 +479,7 @@ For pending certificates check DNS, port 80 and cert-manager events. For mainten
 
 ## Removal
 
-[Resume the deployment](#resume-an-existing-deployment). Establish the retention decision before removal.
+[Resume the deployment](#resume-an-existing-deployment) and [prepare its recorded chart](#prepare-the-recorded-chart-for-helm-operations). Establish the retention decision before removal.
 
 ### Stop application work
 
