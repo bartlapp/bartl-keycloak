@@ -106,7 +106,9 @@ export WORK_DIR="${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation"
 export VALUES="$WORK_DIR/installation.yaml"
 SOURCE_DEPLOYMENT=keycloak
 SOURCE_DIR="$WORK_DIR/clusters/cluster-1/applications/keycloak"
-SOURCE_INSTANCE=$(SOURCE_DEPLOYMENT="$SOURCE_DEPLOYMENT" yq -er '.deployments[strenv(SOURCE_DEPLOYMENT)].instance' "$VALUES")
+SOURCE_INSTANCE=$(jq -er '.instance' "$SOURCE_DIR/backup-result.json")
+test "$(jq -er '.installation' "$SOURCE_DIR/backup-result.json")" = "$(yq -er '.installation' "$VALUES")"
+SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -e '.services[strenv(SOURCE_INSTANCE)] != null' "$VALUES" >/dev/null
 ```
 
 Use retained source PVC/PV identities where available. A return is possible only after restoring the source directory's approved selector and independent cluster access; a protected-input copy alone is not a source context.
@@ -177,6 +179,21 @@ direnv allow "$TARGET_DIR"
 The target selector is prepared and approved, but not entered. A reachable source remains selected for final capture and retirement. Package entries are immutable release identities: reuse an exact match, and give a different artifact a new package key rather than rewriting the source's entry.
 
 For an already v1alpha2 source, inspect both installed and target CRD definitions before interruption and require compatibility for every remaining controller. Never let a new Helm install overwrite an incompatible cluster-wide definition. If compatibility cannot be established, choose a new target cluster. A separate namespace does not isolate the CRD.
+
+For a replacement on the source's supplied cluster, compare the installed definition with a server-normalized dry run of the retained target definition. This includes Kubernetes defaults without changing the shared CRD:
+
+```bash
+if [ "$TARGET_CLUSTER" = "$CLUSTER_ID" ]; then
+  kubectl --context "$KUBE_CONTEXT" get crd keycloakapplications.keycloak.bartl.sh -o json |
+    jq -S '.spec' > "$TARGET_DIR/installed-crd-spec.json"
+  helm show crds "$TARGET_CHART" |
+    kubectl --context "$KUBE_CONTEXT" apply --server-side --dry-run=server -f - -o json |
+    jq -S '.spec' > "$TARGET_DIR/target-crd-spec.json"
+  cmp "$TARGET_DIR/installed-crd-spec.json" "$TARGET_DIR/target-crd-spec.json"
+fi
+```
+
+An identical spec supports these package/controller versions on the existing shared definition. A difference requires an explicit compatibility assessment; without that evidence, use a new target cluster rather than changing the shared schema during cutover.
 
 Choose the administrator's actual source CIDR for restricted acceptance. Ingress must preserve client IPs and enforce the allowlist without direct-service, NodePort or alternate-ingress bypass; maintenance restricts both login and administration.
 
@@ -488,7 +505,42 @@ Verify current-generation Ready and normal client access. Record the active depl
 
 #### Interrupted cutover and a returning source
 
-After any lost acknowledgement, do not infer which generation is active from DNS or a local receipt. Re-enter each reachable deployment's approved selector and inspect the live CR UID, `spec.running`, replica intent, ingress, component Pods and native Jobs; compare its recorded API and PVC/PV identities. Inspect authoritative DNS and actual allowed/denied HTTPS paths. Keep the old source stopped and its controller at zero. If target production writes/effects cannot be excluded, treat the target as potentially authoritative and keep the source retired. Enter `TARGET_DIR`, wait for its selector to load at the next prompt, then withdraw that target's ingress:
+After any lost acknowledgement, do not infer which generation is active from DNS or a local receipt. Re-enter each reachable deployment's approved selector and inspect the live CR UID, `spec.running`, replica intent, ingress, component Pods and native Jobs; compare its recorded API and PVC/PV identities. Inspect authoritative DNS and actual allowed/denied HTTPS paths. Keep the old source stopped and its controller at zero. Enter `TARGET_DIR` and wait for its selector to load at the next prompt.
+
+If the shell was lost, select the already recorded target deployment, not a new placement. Derive its directory from the retained installation record:
+
+```bash
+export WORK_DIR="${WORK_DIR_ROOT:-$HOME/bartl}/acme/acme-installation"
+export VALUES="$WORK_DIR/installation.yaml"
+export TARGET_DEPLOYMENT=keycloak-recovery
+TARGET_CLUSTER=$(yq -er '.deployments[strenv(TARGET_DEPLOYMENT)].cluster' "$VALUES")
+TARGET_INSTANCE=$(yq -er '.deployments[strenv(TARGET_DEPLOYMENT)].instance' "$VALUES")
+TARGET_DIR="$WORK_DIR/clusters/$TARGET_CLUSTER/applications/$TARGET_INSTANCE"
+if [ "$TARGET_DEPLOYMENT" != "$TARGET_INSTANCE" ]; then
+  TARGET_DIR="$TARGET_DIR/deployments/$TARGET_DEPLOYMENT"
+fi
+cd "$TARGET_DIR"
+```
+
+Wait for the next prompt before continuing. Keep the recorded source identity and independent access; if those were lost too, recover them from the retained operating record before using a returning-source command.
+
+From the selected target, inspect the native release and live authority before any new state-changing command:
+
+```bash
+test "$INSTALL_DIR" = "$TARGET_DIR"
+helm status "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" -o json |
+  jq '{revision:.version,status:.info.status}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get deployments,statefulsets,pods,jobs,ingresses -o wide
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json |
+  jq '.items[] | {name:.metadata.name,uid:.metadata.uid,volume:.spec.volumeName}'
+if [ -f "$INSTALL_DIR/recovery-result.json" ]; then
+  test "$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o jsonpath='{.metadata.uid}')" = \
+    "$(jq -er '.metadata.uid' "$INSTALL_DIR/recovery-result.json")"
+fi
+```
+
+If target production writes/effects cannot be excluded, treat it as potentially authoritative, keep the source retired and withdraw only the selected target's ingress while resolving state:
 
 ```bash
 test "$INSTALL_DIR" = "$TARGET_DIR"
@@ -498,6 +550,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete ingress/keycloak --
 ```
 
 Resolve actual state with the responsible operator before reopening either generation. No DNS reversal, automatic fallback or restore replay resolves ambiguous writes.
+
+When inspection establishes the recorded target UID and independent volume, current-generation Ready, the selected reconstruction point and enforced source retirement, that target remains authoritative. If its route is still restricted, resume [Open service](#6-open-service) with the same recorded package. If ordinary access is already enabled, verify actual ordinary HTTPS/application use and its backup schedule instead of replaying reconstruction or reverting to the source. A `pending-*`/failed Helm release is not a committed activation acknowledgement: keep its route withdrawn, retain the native release/CR/Job diagnostics and use the independent-target retry procedure when safe completion cannot be established. Do not edit Helm release Secrets or clear native execution markers.
 
 A reachable returning v1alpha2 source is re-retired through its recorded context, without starting its controller or database first:
 

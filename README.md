@@ -2,7 +2,7 @@
 
 Keycloak over HTTPS with its own PostgreSQL database. The package initializes empty state, reconstructs from a configured backup and performs supported native migrations.
 
-This checkout implements the **unqualified v1alpha2 development candidate**, not a published release. Stable [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0) retains its release-specific API and instructions. The procedures below apply only to an exact v1alpha2 artifact supplied for qualification; do not apply them to 0.8.0. Publication and standalone qualification remain outstanding.
+This checkout documents the **live-qualified `0.9.0-dev.6` v1alpha2 candidate**, not a stable release. Stable [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0) retains its release-specific API and instructions. Use the exact supplied candidate archive and these procedures together; do not apply them to 0.8.0. [DESIGN](DESIGN.md#package-and-qualification-scope) records the exercised profile, artifact identities and material limits. Publication remains separately authorized work.
 
 - [Prerequisites](#prerequisites)
 - [Install a new deployment](#install-a-new-deployment)
@@ -46,7 +46,7 @@ umask 077
 
 ### Obtain the release
 
-Select the exact supplied candidate archive through `CHART_ARCHIVE` and verify its checksum against its delivery record. Once a v1alpha2 release is published, omitting that variable selects the latest stable registry release. The API check below rejects historical packages before installation; Helm's default latest selection excludes prereleases.
+Select the exact supplied candidate archive through `CHART_ARCHIVE` and verify its checksum against its delivery record. Once a stable v1alpha2 release is published, omitting that variable selects the latest stable registry release. The API check below rejects historical packages before installation; Helm's default latest selection excludes prereleases.
 
 ```bash
 mkdir -p "$WORK_DIR/packages"
