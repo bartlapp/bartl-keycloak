@@ -6,6 +6,8 @@ The [README](README.md) and linked [recovery runbook](RECOVERY.md) own operation
 
 Current stable release: `0.8.0`, Keycloak 26.6.2, PostgreSQL 17.6, Restic 0.19.1 and CRD revision 3. It removes the recovery-administrator input and forced session invalidation. Native migration supports Keycloak 26.6.1 → 26.6.2, not downgrades or PostgreSQL major upgrades. Governing contract/guide revision: `bartl-app` `e891fac99edb16a5349b6e86577dbdab7720f108`.
 
+The runtime-interface decision of 2026-11-26 below is a documentation-only target for a future fresh-installation package, governed by the application contract and operating guide. It is not part of stable 0.8.0 or a claim of published implementation. The release and historical qualification descriptions here retain their original scope.
+
 The README uses Base's shared `load_deployment` context: each deployment directory sources its cluster `.envrc` and selects one recorded deployment. The loader checks cluster and directory identity and exports placement plus the normalized `$WORK_DIR/packages/<package>/<version>` chart root without network access. Current creation procedures generate the selectors; resumption uses retained selectors rather than a context-migration procedure.
 
 Chart acquisition remains explicit. Fresh/replacement operations resolve the latest stable release, retain a new immutable package entry and promote the extracted chart from disposable staging into its package/version cache only after a successful pull. Routine operation reuses that cache or pulls the recorded version. Target preparation does not select the target before source retirement; bounded return explicitly re-enters the retained source directory.
@@ -37,11 +39,31 @@ Keycloak's durable state lives in PostgreSQL. A Deployment suffices for Keycloak
 
 Capture uses PostgreSQL dumps rather than realm export to preserve identities, credentials/MFA, roles, client relationships and signing material.
 
-One namespace-local controller coordinates database provisioning, recovery Jobs, Keycloak startup and traffic admission. Helm owns its inputs and controller Deployment, not the lifecycle-owned workloads. Native `kc.sh start` owns initialization and migration. The controller drains predecessor processes before migration and admits traffic after verified native startup.
+One namespace-local controller coordinates database provisioning, recovery Jobs, Keycloak startup and traffic admission. In the current implementation Helm renders its configuration and replica intent as well as the controller Deployment, not the lifecycle-owned workloads. Native `kc.sh start` owns initialization and migration. The controller drains predecessor processes before migration and admits traffic after verified native startup.
 
 Normal restart disables native empty initialization: otherwise state loss could silently create a new instance. Established-target PVC metadata avoids recurring database/schema observation; a local guard checks target binding and supported native model version. Existing state needs no backup access. Only confirmed absence permits backup lookup and, if no matching point exists, initialization.
 
-Every completion observes current replica intent. A restore transaction may finish while stopped, but must not restart Keycloak. PostgreSQL remains available for diagnosis.
+The current implementation observes replica intent at completion: a restore transaction may finish with Keycloak stopped, and PostgreSQL remains available for diagnosis. This is the existing Keycloak-only stop boundary, not the whole-application stop defined below.
+
+### Target runtime interface — not yet implemented
+
+Helm owns the immutable package selection and static configuration, never live run/stop or replica intent. The application CR owns durable runtime intent independently of the installation configuration. Creation defaults may initialize a new CR once; Helm upgrades, configuration reconciliation and controller restarts must preserve existing runtime intent, including an intentional stop. Helm must not render competing runtime overrides from `operations.deployments`, service settings or retained Helm values.
+
+`spec.running` controls the complete logical application. `spec.application.replicas` controls the desired number of Keycloak replicas while the application is enabled. With `spec.running: false`, whole-application stop dominates any positive replica count without erasing that count. With `spec.running: true` and `spec.application.replicas: 0`, only Keycloak is scaled to zero: the dedicated PostgreSQL database remains available, including for capture and diagnosis. That state must not be reported as whole-application `Stopped`.
+
+A CR scale subresource targeting `spec.application.replicas` is planned for native scaling through the application interface. Scaling the generated Deployment is not the durable interface. Neither scaling nor restarting an individual component may change `spec.running` or awaken a stopped application.
+
+Fresh installations default to `spec.running: true` and one Keycloak replica; those defaults apply only at creation. Routine stop, start, scaling, status and component restart require no chart acquisition, connection rendering or local installation-value edits. A replacement procedure must select its initial runtime intent before application execution; a stopped target must not briefly start through an unconditional creation default.
+
+Whole-application `Stopped` means Keycloak, its dedicated PostgreSQL database and owned background execution have stopped, with admission of new transition and backup work prevented. The controller remains available to observe intent and coordinate a later start; persistent state and diagnostic evidence are retained. Shared or external databases are outside this stop authority. A requested stop is not confirmation: status must not claim `Stopped` while owned work is still executing or its termination is unconfirmed.
+
+Stop must safely drain or cancel already admitted initialization, migration, restore and backup work before stopping the database. Suspending a schedule alone does not stop an existing Job. A completion racing with stop must recheck current authority and cannot restart Keycloak, reopen access or re-admit background work. An interrupted or uncertain transition retains its failure boundary rather than becoming eligible for automatic replay when the application is enabled again.
+
+Individual Keycloak and PostgreSQL restarts remain native workload operations, not a package-specific tandem restart. A Keycloak restart does not require restarting PostgreSQL; a PostgreSQL restart does not require a controller-ordered Keycloak restart. Native dependency reconnection and readiness still apply. Neither operation authorizes initialization, reconstruction or a change to durable running intent.
+
+This target is fresh-installation only. There is no existing-installation migration, runtime-override shim or adoption procedure in this decision. A replacement target receives explicitly selected new runtime intent; it must not blindly inherit a stopped source's intent. Sharing logical identity, static configuration or a recovery point does not share live runtime authority. Source retirement and prevention of renewed production effects remain separate activation obligations.
+
+The current API has `spec.application.replicas`, but no `spec.running`; the CRD exposes only the status subresource, not scale. Current Helm rendering still projects deployment-specific replica overrides, and the README's persistent-stop procedure leaves PostgreSQL running. Those schemas, implementation and recipes are unchanged by this decision. They remain the available interface for their matching package revision, not an implementation of this target. Existing stop, stopped-capture, restart and failure evidence must not be reused as qualification of whole-stack stop, runtime ownership separation or CR scaling.
 
 ## Recovery and exclusion
 
@@ -59,17 +81,19 @@ Online `pg_dump` needs PostgreSQL, not running Keycloak. The backup worker valid
 
 The controller-owned CronJob admits scheduled/manual capture. Already admitted Jobs retain their configuration when scheduling is suspended or the CronJob is removed. Backup failure must not stop a healthy application, override stop/routing intent or introduce repository access into normal restart.
 
+For the target runtime interface, backup scheduling and manual admission additionally obey whole-application running authority. Keycloak-only zero replicas still permits a database capture; whole-application stop does not wake PostgreSQL to take one. Already admitted work must reach a safe completion or confirmed cancellation before `Stopped` can be asserted. Failed capture or uncertain state cannot authorize restart, and publication failure alone must neither stop an otherwise healthy enabled application nor override an intentional stop.
+
 ## Failure and re-entry
 
 One-shot execution claims prevent replay after failed initialization, migration or recovery. A lost post-commit acknowledgement is not proof of completion: failed/missing recovery Jobs persist startup failure on the PVC even if SQL committed. Controller restart may observe an unambiguous result, but does not reconstruct uncertain success.
 
-New running intent cannot clear that failure. Keep the target isolated with diagnostics and recover on independent empty storage. Same-target repair and Helm rollback cannot safely infer or reverse native data changes.
+New running intent cannot clear that failure. Keep the target isolated with diagnostics and recover on independent empty storage. Same-target repair and Helm rollback cannot safely infer or reverse native data changes. In the target interface, transition failure is not an instruction to rewrite `spec.running` or the desired replica count: failure continues to block unsafe startup, and whole-application `Stopped` is reported only after its owned-component and work-drain requirements are met.
 
 ## Ownership and isolation
 
-The [CRD](chart/crds/keycloakapplications.yaml) owns the API schema; the [input reference](README.md#helm-inputs-and-connections) owns configuration and Secret bindings. Helm renders the CR, controller/RBAC and optional certificate request. The application controller owns database/application workloads, Jobs, schedules and routing. cert-manager owns certificate issuance and renewal; native workers have no Kubernetes mutation authority.
+The [CRD](chart/crds/keycloakapplications.yaml) records the available API schema; the [input reference](README.md#helm-inputs-and-connections) owns current configuration and Secret bindings. Helm currently renders the CR, controller/RBAC and optional certificate request. The application controller owns database/application workloads, Jobs, schedules and routing. cert-manager owns certificate issuance and renewal; native workers have no Kubernetes mutation authority.
 
-Deployment-specific intent is projected on copies of service settings so source and target can share one logical identity without sharing stop/routing intent. Connection rendering uses the same helpers, not previously calculated `resolved` output. Neither rendering nor a declared issuer creates native realms or clients.
+Current deployment-specific overrides are projected on copies of service settings. That is the existing rendering model, not the target ownership model: the target retains deployment selection for placement and static configuration while runtime intent lives only on each target's application CR. Connection rendering uses the same helpers, not previously calculated `resolved` output. Neither rendering nor a declared issuer creates native realms or clients.
 
 Secrets are read by explicit name, not through a namespace-wide informer. Backup workers receive repository-role and database credentials, never destructive repository authority. Reader access includes native lock writes but no backup-content mutation. Restic locks coordinate cooperating clients, not malicious deletion.
 
