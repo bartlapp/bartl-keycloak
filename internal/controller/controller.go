@@ -94,8 +94,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	}
 	refuse := func(reason string, err error) (ctrl.Result, error) {
 		if apiUnavailable(err) {
-			established := exists && dep.Annotations[initializationAnnotation] == "false"
-			return r.report(ctx, a, "Unknown", "ObservationUnavailable", "Management API observation or reconciliation is unavailable; existing execution retains its running authority: "+err.Error(), established && a.Spec.Application.Replicas > 0, false, false, true)
+			return r.report(ctx, a, "Unknown", "ObservationUnavailable", "Management API observation or reconciliation is unavailable; existing execution is not withdrawn, but current readiness is unconfirmed: "+err.Error(), false, false, false, true)
 		}
 		return fail("Unknown", reason, err.Error())
 	}

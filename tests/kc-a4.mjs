@@ -512,11 +512,15 @@ async function ordinaryScenario() {
   fixture.snapshotID=captured.snapshotID;await save('fixture.json',fixture);
   k('-n',source,'scale','keycloakapplication/keycloak','--replicas=2');
   intent(source,{running:false});await stopped(source);
+  const changedStatic=JSON.parse(await readFile(installationFile(source),'utf8'));
+  changedStatic.services[app(source).spec.identity.instance].backup.schedule='17 3 * * *';
+  await writeFile(installationFile(source),JSON.stringify(changedStatic),{mode:0o600});
   staticApply(source);
   k('-n',source,'rollout','restart','deployment/keycloak-controller');
   k('-n',source,'rollout','status','deployment/keycloak-controller','--timeout=180s');
   await stopped(source);
   assert.equal(app(source).spec.running,false);assert.equal(app(source).spec.application.replicas,2);
+  assert.equal(app(source).spec.backup.schedule,'17 3 * * *','changed static configuration was not reconciled');
   for(const component of ['deployment/keycloak','statefulset/keycloak-db']){
     k('-n',source,'rollout','restart',component);
     await stopped(source);
@@ -560,17 +564,23 @@ async function ordinaryScenario() {
   const observedPods=json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.map(p=>p.metadata.uid).sort();
   const unavailableRules=structuredClone(role.rules);
   for(const rule of unavailableRules)if(rule.resources?.includes('secrets'))rule.resourceNames=rule.resourceNames.filter(name=>name!=='keycloak-database');
+  const observedSchedule=app(source).spec.backup.schedule;
   try {
     k('-n',source,'patch','role/keycloak-controller','--type=merge','-p',JSON.stringify({rules:unavailableRules}));
     await until('credential observation unavailable',()=>app(source),a=>condition(a,'Degraded')&&a.status.state.reason==='ObservationUnavailable');
+    intent(source,{'backup.schedule':'31 5 * * *'});
+    const unavailable=await until('unapplied static configuration stays unready',()=>app(source),a=>condition(a,'Degraded')&&a.status.state.reason==='ObservationUnavailable');
+    assert(!condition(unavailable,'Ready'),'unconfirmed current configuration must not report Ready');
+    assert.equal(json('-n',source,'get','cronjob/keycloak-backup').spec.schedule,observedSchedule);
     assert.equal(json('-n',source,'get','deployment/keycloak').spec.replicas,1);
     assert.deepEqual(json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.map(p=>p.metadata.uid).sort(),observedPods);
     assert.equal(app(source).spec.running,true);await oidc();
   } finally {
+    intent(source,{'backup.schedule':observedSchedule});
     k('-n',source,'patch','role/keycloak-controller','--type=merge','-p',JSON.stringify({rules:role.rules}));
   }
   await ready(source);
-  return {replicas:2,nativeScale:true,ordinaryRestartPreservedIdentity:true,samePodRestart:true,ordinaryRefreshPreserved:true,wholeApplicationStop:true,runtimeIntentSurvivedStaticApplyAndControllerRestart:true,stoppedComponentRestartsDidNotWake:true,independentDatabaseRestart:true,keycloakZeroCapture:captured.snapshotID,failedObservationDidNotInitialize:true,continuedOperationDuringObservationLoss:true,invalidReplicaIntentsRejected:true};
+  return {replicas:2,nativeScale:true,ordinaryRestartPreservedIdentity:true,samePodRestart:true,ordinaryRefreshPreserved:true,wholeApplicationStop:true,runtimeIntentSurvivedStaticApplyAndControllerRestart:true,stoppedComponentRestartsDidNotWake:true,independentDatabaseRestart:true,keycloakZeroCapture:captured.snapshotID,failedObservationDidNotInitialize:true,continuedOperationDuringObservationLoss:true,unconfirmedConfigurationNotReady:true,invalidReplicaIntentsRejected:true};
 }
 
 async function conflictScenario() {

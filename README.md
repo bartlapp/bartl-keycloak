@@ -359,9 +359,9 @@ Context selection is complete. Status inspection, native restart and capture thr
 
 ### Prepare the recorded chart for Helm operations
 
-Starting condition: the deployment is selected through [Resume an existing deployment](#resume-an-existing-deployment). Use this preparation for deliberate static configuration changes, backup setup and removal, never ordinary stop/start/scale/status or component restart.
+Starting condition: the deployment is selected through [Resume an existing deployment](#resume-an-existing-deployment). Use this preparation for deliberate static configuration changes and backup setup, never ordinary stop/start/scale/status, component restart or uninstall.
 
-Acquire the recorded chart only if its cache is absent, then render connections. A pull becomes visible in `CHART` only after successful extraction:
+Acquire the recorded chart only if its cache is absent, then render connections. For a supplied candidate, set `CHART_ARCHIVE` to its checksum-verified retained archive; its version must match the recorded selection. Otherwise pull that recorded version from the registry. The cache becomes visible only after complete extraction:
 
 ```bash
 set -euo pipefail
@@ -369,7 +369,12 @@ umask 077
 if [ ! -d "$CHART" ]; then
   mkdir -p "$(dirname "$CHART")"
   CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
-  helm pull "$CHART_REF" --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
+  if [ -n "${CHART_ARCHIVE:-}" ]; then
+    test "$(helm show chart "$CHART_ARCHIVE" | yq -er '.version')" = "$PACKAGE_VERSION"
+    tar -xzf "$CHART_ARCHIVE" -C "$CHART_STAGE"
+  else
+    helm pull "$CHART_REF" --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
+  fi
   mv "$CHART_STAGE/bartl-keycloak" "$CHART"
   rm -r "$CHART_STAGE"
 fi
@@ -544,7 +549,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" logs deployment/keycloak -c keycloak 
 
 Check `status.operation`, current-generation conditions and Job logs (`-c recovery` or `-c backup`). `status.observedGeneration` means examined, not achieved; the condition must be true for the current `metadata.generation`. `Ready` covers intended running/access, `Stopped` confirms the complete owned application has stopped, and `Quiescent` describes the native-work boundary. Keycloak-only zero replicas must not be reported as whole-application Stopped.
 
-`ObservationUnavailable` reports a management API authorization, transport or availability failure. Already admitted execution retains its running authority; dependent reconciliation waits for access to recover. Restore that access and check useful service behavior. A confirmed invalid configuration or failed native transition is a different failure boundary, and an unobserved stop remains unconfirmed.
+`ObservationUnavailable` reports a management API authorization, transport or availability failure. Already admitted execution retains its running authority; dependent reconciliation waits for access to recover. `Ready=False` means current reconciliation is unconfirmed, not that the running service was withdrawn. Restore that access and check useful service behavior. A confirmed invalid configuration or failed native transition is a different failure boundary, and an unobserved stop remains unconfirmed.
 
 A client timeout does not cancel work. Failed transitions remain isolated across restarts; do not clear failed-state markers or roll software back to force progress. Keep diagnostics and verified inputs, then recover on independent empty storage.
 
@@ -552,7 +557,7 @@ For pending certificates check DNS, port 80 and cert-manager events. For mainten
 
 ## Removal
 
-[Resume the deployment](#resume-an-existing-deployment) and [prepare its recorded chart](#prepare-the-recorded-chart-for-helm-operations). Establish the retention decision before removal.
+[Resume the deployment](#resume-an-existing-deployment) and establish the retention decision before removal. Native uninstall needs no chart acquisition or connection rendering.
 
 ### Stop application work
 
@@ -578,6 +583,31 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc,secrets
 ```
 
 Uninstall retains `keycloak-db`, `keycloak-capture` and the shared CRD. A new CR cannot adopt their prior binding; uninstall is not reinstall. Delete identified data/PVCs or Secrets only under the retention decision, including complete captures awaiting publication. Namespace deletion destroys retained PVCs and Secrets. Do not delete the shared CRD as application cleanup.
+
+### Release a retired slot for reuse
+
+Retaining its data leaves the slot occupied: choose another empty slot or target cluster. Release it only after verified retirement, independent retention of required history/keys/inputs and an explicit decision to destroy that placement's remaining data. Inspect every namespace resource; do not delete a namespace containing unrelated work.
+
+For the documented `local-path`/Delete storage profile, after uninstall:
+
+```bash
+{
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get all,ingress,networkpolicy,pvc,secrets
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$INSTALL_DIR/retired-pvc.json"
+kubectl --context "$KUBE_CONTEXT" delete namespace "$NS" --wait=true --timeout=10m
+for pv in $(jq -r '.items[].spec.volumeName' "$INSTALL_DIR/retired-pvc.json"); do
+  kubectl --context "$KUBE_CONTEXT" wait "pv/$pv" --for=delete --timeout=10m
+done
+rm "$INSTALL_DIR/.envrc"
+yq -i '
+  del(.operations.recovery.points[][] | select(.deployment == strenv(DEPLOYMENT))) |
+  del(.operations.deployments[strenv(DEPLOYMENT)], .deployments[strenv(DEPLOYMENT)])
+' "$VALUES"
+cd "$WORK_DIR/clusters/$CLUSTER_ID"
+}
+```
+
+The next prompt clears retired deployment context. Keep its protected inputs and receipts according to retention; package entries and the logical service remain unchanged for other placements. Other storage reclaim policies require their storage owner's disposition before reuse. Creation still uses native `create` and rejects any occupied namespace or CR; this procedure never overwrites a slot merely because its color is next.
 
 ### DNS and infrastructure cleanup
 

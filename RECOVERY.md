@@ -15,7 +15,24 @@ umask 077
 
 ## Recover or replace a deployment
 
-Recover or replace on independent storage with the selected exact v1alpha2 package. Supported native data transitions are Keycloak 26.6.2 → 26.6.2 and 26.6.1 → 26.6.2 with PostgreSQL 17; no intermediate Keycloak hop is required for this pair. Downgrades and PostgreSQL major changes are unsupported. The package restores the latest matching backup and migrates automatically. Before interruption, have target capacity, the target artifact, protected inputs, usable backup history and a way to retire the source. The installation's operating agreement supplies interruption, data-loss and acceptance limits.
+Recover or replace on independent storage with the selected exact v1alpha2 package. The package restores the latest matching complete point and performs supported native migration automatically. Before interruption, have target capacity, the target artifact, protected inputs, usable backup history and a way to retire the source. The installation's operating agreement supplies interruption, data-loss and acceptance limits.
+
+| Recovery input | Supported contract |
+| --- | --- |
+| Point format | Format 1: one verified native PostgreSQL custom archive and its integrity/identity manifest. |
+| Keycloak source data | 26.6.1 or 26.6.2, with the matching immutable image identity below. |
+| PostgreSQL source | 17.6 with the package-pinned PostgreSQL image; PostgreSQL major changes are unsupported. |
+| Destination procedure | Native Keycloak 26.6.2 startup migrates 26.6.1 directly or starts 26.6.2 state. No intermediate runtime image or operator-selected migration hop is needed for this pair. Downgrades are unsupported. |
+
+The format-1 image identities accepted by this package are:
+
+```text
+quay.io/keycloak/keycloak:26.6.1@sha256:dea26401d06341095cc4ea9d66896200b55de5ca1daa1d2fcbe58493afa6e0ad
+quay.io/keycloak/keycloak:26.6.2@sha256:f9ba7b2af90db8dc749a57ca9aedca51e840cb9224441ab546a968da941da900
+docker.io/library/postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+```
+
+Source package/API versions are provenance, not migration hops or management state to adopt. The selected destination chart pins its required runtime/worker images; retain those immutable artifacts independently.
 
 Source and target keep the same `VALUES`, logical instance and hostname, but use independent namespaces, PVCs, database passwords and deployment intent. Another namespace on the same host does not establish host/provider-loss protection.
 
@@ -50,7 +67,12 @@ umask 077
 if [ ! -d "$CHART" ]; then
   mkdir -p "$(dirname "$CHART")"
   CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
-  helm pull "$CHART_REF" --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
+  if [ -n "${CHART_ARCHIVE:-}" ]; then
+    test "$(helm show chart "$CHART_ARCHIVE" | yq -er '.version')" = "$PACKAGE_VERSION"
+    tar -xzf "$CHART_ARCHIVE" -C "$CHART_STAGE"
+  else
+    helm pull "$CHART_REF" --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
+  fi
   mv "$CHART_STAGE/bartl-keycloak" "$CHART"
   rm -r "$CHART_STAGE"
 fi
@@ -174,6 +196,9 @@ The source is still selected. For a v1alpha2 source, suspend schedules/withdraw 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak --type=merge \
   -p '{"spec":{"backup":{"suspend":true},"ingress":{"enabled":false},"application":{"replicas":0}}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Quiescent --timeout=60m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak \
+  --for=jsonpath='{.status.application.activePods}'=0 --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status deployment/keycloak --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete ingress/keycloak --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
@@ -266,8 +291,10 @@ Wait for the next shell prompt: direnv selects target cluster access, placement 
 Check the target API endpoint before creating runtime resources:
 
 ```bash
-EXPECTED_API=$(yq -er '.clusters[strenv(CLUSTER_ID)].observed.api.endpoint' "$VALUES")
-test "$(kubectl --context "$KUBE_CONTEXT" config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = "$EXPECTED_API"
+ACTUAL_API=$(kubectl --context "$KUBE_CONTEXT" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+EXPECTED_API=$(yq -r '.clusters[strenv(CLUSTER_ID)].observed.api.endpoint // ""' "$VALUES")
+if [ -n "$EXPECTED_API" ]; then test "$ACTUAL_API" = "$EXPECTED_API"; fi
+printf 'Selected target API: %s\n' "$ACTUAL_API"
 test "$CHART" = "$TARGET_CHART"
 kubectl --context "$KUBE_CONTEXT" get nodes
 kubectl --context "$KUBE_CONTEXT" create namespace "$NS"
