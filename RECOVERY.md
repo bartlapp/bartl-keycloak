@@ -1,6 +1,6 @@
 # Keycloak recovery and replacement
 
-Use this runbook for the **v1alpha2 development checkout awaiting exact-candidate qualification**, on independent empty storage, replacement and supported replacement upgrades. Use the [README](README.md) for artifact availability, installation and routine operation; [DESIGN](DESIGN.md#package-and-qualification-scope) distinguishes the preceding `0.9.0-dev.6` evidence from the unqualified corrections. Stable 0.8.0 retains its release-specific procedures; historical results do not qualify changed artifacts or instructions.
+Use this runbook for **v1alpha2 candidate `0.9.0-dev.7`, awaiting exact-candidate qualification**, on independent empty storage, replacement and supported replacement upgrades. Use the [README](README.md) for artifact availability, installation and routine operation; [DESIGN](DESIGN.md#package-and-qualification-scope) distinguishes the preceding `0.9.0-dev.6` evidence from the unqualified corrections. Stable 0.8.0 retains its release-specific procedures; historical results do not qualify changed artifacts or instructions.
 
 ## Before starting
 
