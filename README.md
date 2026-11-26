@@ -300,6 +300,9 @@ if yq -e '.services[strenv(INSTANCE)].endpoints.https.tlsManaged' "$INSTALL_DIR/
 fi
 if [ "$INITIAL_RUNNING" = false ]; then
   kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+elif [ "$INITIAL_REPLICAS" = 0 ]; then
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Quiescent --timeout=10m
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status statefulset/keycloak-db --timeout=10m
 else
   kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 fi
@@ -428,7 +431,7 @@ Do not restart Keycloak or the controller as part of this operation. Verify logi
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
   --type=merge -p '{"spec":{"running":false}}'
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=60m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get deployments,statefulsets,pods,jobs,cronjobs,ingresses
 ```
@@ -498,7 +501,7 @@ helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
 ```bash
 JOB="keycloak-backup-$(date -u +%Y%m%d%H%M%S)"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create job "$JOB" --from=cronjob/keycloak-backup
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "job/$JOB" --for=condition=complete --timeout=30m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "job/$JOB" --for=condition=complete --timeout=60m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" logs "job/$JOB" -c backup \
   | tee "$INSTALL_DIR/backup-result.json"
 jq -e '.snapshotID | test("^[a-f0-9]{64}$")' "$INSTALL_DIR/backup-result.json"
@@ -508,7 +511,7 @@ Check Job success and the final JSON receipt for the installation, application/P
 
 Defaults are daily `0 2 * * *` in `UTC`. `services.<instance>.backup.suspend: true` stops schedules, not admitted Jobs. `backup.enabled: false` removes the schedule, not admitted work. Whole-application stopped intent prevents capture admission and never wakes the database for backup. Capture with Keycloak at zero requires `spec.running: true`.
 
-The worker deadline is 25 minutes and Job deadline 30 minutes, without automatic replay. A client timeout does not cancel execution. Inspect failed Jobs and logs before another operation; interrupted publication is not a completed backup. Never unlock until its execution is known to have ended.
+Each worker phase has a 25-minute deadline. A Job permits at most one retained publication followed by one fresh capture/publication, with a 55-minute deadline covering both phases and termination. Whole-stop drains already admitted work, so its wait allows 60 minutes; unavailable termination remains unconfirmed. A client timeout does not cancel execution. Inspect failed Jobs and logs before another operation; interrupted publication is not a completed backup. Never unlock until its execution is known to have ended.
 
 Backup failure does not stop a healthy application. A complete capture whose publication failed remains on the dedicated `keycloak-capture` PVC. The next admitted backup first publishes retained complete work, then captures current database state; its successful receipt confirms current capture, not merely an old retry. Capacity derives from `database.size`; include database storage plus temporary capture/Restic workspace in planning. Stop/uninstall preserves both claims. Monitoring, independent replication, retention and destructive maintenance belong to the backup operator.
 
@@ -551,7 +554,7 @@ Set whole-application stop intent and keep the controller available until draina
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
   --type=merge -p '{"spec":{"running":false}}'
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=60m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
 ```

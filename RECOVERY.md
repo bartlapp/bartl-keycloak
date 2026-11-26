@@ -187,7 +187,7 @@ Confirm graceful drain, current-generation `Quiescent=True`, no Keycloak process
 ```bash
 FINAL="keycloak-final-$(date -u +%Y%m%d%H%M%S)"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create job "$FINAL" --from=cronjob/keycloak-backup
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "job/$FINAL" --for=condition=complete --timeout=30m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "job/$FINAL" --for=condition=complete --timeout=60m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" logs "job/$FINAL" -c backup > "$SOURCE_DIR/backup-result.json"
 jq -e '.snapshotID | test("^[a-f0-9]{64}$")' "$SOURCE_DIR/backup-result.json"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$SOURCE_DIR/source-pvc.json"
@@ -198,7 +198,7 @@ After a verified final backup and completed Jobs, stop the **whole v1alpha2 sour
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
   --type=merge -p '{"spec":{"running":false}}'
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=60m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs,ingresses
 kubectl --context "$KUBE_CONTEXT" -n "$NS" scale deployment/keycloak-controller --replicas=0
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete pod \
@@ -418,7 +418,7 @@ Create an authorized disposable user in a restored realm, reopen its details to 
 ```bash
 JOB="keycloak-recovered-$(date -u +%Y%m%d%H%M%S)"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" create job "$JOB" --from=cronjob/keycloak-backup
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "job/$JOB" --for=condition=complete --timeout=30m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "job/$JOB" --for=condition=complete --timeout=60m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" logs "job/$JOB" -c backup > "$INSTALL_DIR/recovered-backup-result.json"
 jq -e --arg previous "$EXPECTED_SNAPSHOT" \
   '(.snapshotID | test("^[a-f0-9]{64}$")) and .snapshotID != $previous' \
@@ -470,7 +470,7 @@ For an authorized return, with the target still selected:
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
   --type=merge -p '{"spec":{"running":false,"ingress":{"enabled":false},"backup":{"suspend":true}}}'
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=60m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete ingress/keycloak --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
 ```

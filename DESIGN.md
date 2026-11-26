@@ -6,7 +6,7 @@ The [README](README.md) and linked [recovery runbook](RECOVERY.md) own operation
 
 Current stable release remains `0.8.0`, Keycloak 26.6.2, PostgreSQL 17.6, Restic 0.19.1 and CRD revision 3. Its API and in-place evidence are historical, not candidate qualification.
 
-This checkout implements the **unqualified `0.9.0-dev.2` v1alpha2 candidate**, governed by `bartl-app` `d1cd9702a50fe6b43afae7dfb63632fe2731ab28` and GmbH ADR-10 `84537f9`. It is not published or fully live-qualified. Supported native data transitions remain 26.6.1 → 26.6.2 and same-version 26.6.2 with PostgreSQL 17, not downgrades or PostgreSQL major upgrades. This pair needs no intermediate native hop. Exact candidate artifacts, all contract cases and standalone procedure execution require qualification; no historical check is silently reused.
+This checkout implements the **unqualified `0.9.0-dev.3` v1alpha2 candidate**, governed by `bartl-app` `d1cd9702a50fe6b43afae7dfb63632fe2731ab28` and GmbH ADR-10 `84537f9`. It is not published or fully live-qualified. Supported native data transitions remain 26.6.1 → 26.6.2 and same-version 26.6.2 with PostgreSQL 17, not downgrades or PostgreSQL major upgrades. This pair needs no intermediate native hop. Exact candidate artifacts, all contract cases and standalone procedure execution require qualification; no historical check is silently reused.
 
 The README uses Base's shared `load_deployment` context: each deployment directory sources its cluster `.envrc` and selects one recorded deployment. The loader checks cluster and directory identity and exports placement plus the normalized `$WORK_DIR/packages/<package>/<version>` chart root without network access. Current creation procedures generate the selectors; resumption uses retained selectors rather than a context-migration procedure.
 
@@ -93,6 +93,8 @@ Online `pg_dump` needs PostgreSQL, not running Keycloak. The backup worker valid
 
 A dedicated `keycloak-capture` PVC, sized from database storage rather than another operator choice, retains complete captures across publication failures. The next admitted backup publishes retained complete work before capturing current database state, so a final receipt never represents only an earlier failed publication. Include temporary capture capacity in planning. Both database and capture PVCs survive stop/uninstall until an explicit retention decision. These changed worker semantics require new exact-image qualification.
 
+At most two 25-minute worker phases execute: retained publication, then fresh capture/publication. The backup Job's 55-minute deadline includes both and termination margin; a 30-minute Job could otherwise repeatedly kill the fresh phase after a valid retained publication. Concurrent work inserting another pending capture between phases is reported as a conflict, not an unbounded retry chain. Recovery Jobs retain their separate 30-minute deadline.
+
 Native file locking excludes concurrent capture-volume mutation, including a canceled worker whose child has not exited yet. Completed capture becomes eligible by atomic rename to `pending`; verified publication retires that name atomically before file deletion. A later worker reclaims only abandoned temporary capture and retired directories under the same lock, never the pending point.
 
 The controller-owned CronJob admits scheduled/manual capture. Already admitted Jobs retain their configuration when scheduling is suspended or the CronJob is removed. Backup failure must not stop a healthy application, override stop/routing intent or introduce repository access into normal restart.
@@ -151,7 +153,7 @@ The regression creates/removes its own database and role; without the variable i
 
 | File | Required fixture inputs |
 | --- | --- |
-| `runtime.json` | `kubeconfig`, `server`, exact candidate `chart`, fixture `backupImage`, and explicit `candidateRelease: "0.9.0-dev.2"`. Optional `source` selects a retained candidate source namespace; `repository` selects the supplied HTTPS fixture. Never inherit a historical release default. |
+| `runtime.json` | `kubeconfig`, `server`, exact candidate `chart`, fixture `backupImage`, and explicit `candidateRelease: "0.9.0-dev.3"`. Optional `source` selects a retained candidate source namespace; `repository` selects the supplied HTTPS fixture; `namespacePrefix` selects fresh `kc-a4-*` target placements without deleting prior runs. Never inherit a historical release default. |
 | `credentials.json` | `admin`, `user`, `restic` encryption password, and REST authentication passwords `reader` and `writer`. |
 | `repository.crt` | Trusted repository CA certificate. |
 | `source-values.json` | Candidate fixture's HTTPS `configuration.hostname`, database settings, bootstrap Secret name and ingress settings; not an old Helm runtime interface. |
@@ -181,6 +183,7 @@ node tests/kc-a4.mjs vanilla
 node tests/kc-a4.mjs restore
 node tests/kc-a4.mjs fallback
 node tests/kc-a4.mjs initializer
+node tests/kc-a4.mjs stop-during-restore
 node tests/kc-a4.mjs interruption
 node tests/kc-a4.mjs refusal
 node tests/kc-a4.mjs subsequent
@@ -195,7 +198,7 @@ Source-independent restore leaves the predecessor whole-stopped/controller-unava
 
 ### Replacement migration harness
 
-`tests/kc-a5.mjs` uses `kc-a5-*` namespaces. `KC_A5_STATE` holds `runtime.json`, `credentials.json` and `repository.crt` (default `.lab/kc-a5`). Credentials match A4. Runtime supplies target `kubeconfig`/`apiServer`, `baselineChart`, `candidateChart`, `candidateController`, `candidateKeycloak`, `candidateBackup`, `hostname`, allowed `adminIPv4` and explicit `candidateRelease: "0.9.0-dev.2"`. Source preparation additionally requires independent old-API `sourceKubeconfig`/`sourceAPIServer`; target reconstruction uses retained source inputs and never contacts that API. Install the target CRD before the harness. `repository` can select an external fixture reachable independently from both clusters.
+`tests/kc-a5.mjs` uses `kc-a5-*` namespaces. `KC_A5_STATE` holds `runtime.json`, `credentials.json` and `repository.crt` (default `.lab/kc-a5`). Credentials match A4. Runtime supplies target `kubeconfig`/`apiServer`, `baselineChart`, `candidateChart`, `candidateController`, `candidateKeycloak`, `candidateBackup`, `hostname`, allowed `adminIPv4` and explicit `candidateRelease: "0.9.0-dev.3"`. Source preparation additionally requires independent old-API `sourceKubeconfig`/`sourceAPIServer`; target reconstruction uses retained source inputs and never contacts that API. Install the target CRD before the harness. `repository` can select an external fixture reachable independently from both clusters. Optional `namespacePrefix` selects fresh `kc-a5-*` target placements; the retained source and probe namespaces do not change.
 
 Select `baselineRelease`/`sourceVersion` explicitly. Public released `0.8.0` with native `26.6.2` supplies old-API source → v1alpha2 same-version reconstruction. Historical `0.3.0`/26.6.1 source was located at archived commit `c2d6add24cfe016f286e0a7087d0faa6fe4cd495`; its old chart and operating images are absent from the current public registry. Rebuilding that exact source is a qualification fixture, not a reissued release or an operator dependency. Record the rebuilt image identities and retain a genuine recovery point for later transition qualification; never relabel 26.6.2 data or synthesize version metadata. Prepare source `kc-a5-tls` and the supplied HTTPS repository. Source preparation retains TLS/PVC comparison inputs and observed retirement before shutdown. Target `kc-a5-probe` supplies denied/backend checks. Hostname routing and source-host exclusion remain explicit operator actions, not assumptions inferred from a retained retirement receipt. Optional `sshConfig` selects external checks through host `k3s`; optional `base` overrides the URL.
 

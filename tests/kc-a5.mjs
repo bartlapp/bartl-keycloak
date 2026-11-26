@@ -8,7 +8,11 @@ import path from 'node:path';
 const state=path.resolve(process.env.KC_A5_STATE||'.lab/kc-a5');
 const load=async name=>JSON.parse(await readFile(path.join(state,name+'.json')));
 const cfg=await load('runtime'), secrets=await load('credentials');
-const source=cfg.source||'kc-a5-source', base=cfg.base||(cfg.hostname?'https://'+cfg.hostname:'https://kc-a5.dev.fke.systems'), realm='replacement-proof';
+const namespacePrefix=cfg.namespacePrefix||'kc-a5-';
+assert.match(namespacePrefix,/^kc-a5-[a-z0-9-]*$/);
+const namespace=name=>namespacePrefix+name;
+assert(cfg.base||cfg.hostname,'supply the qualified HTTPS hostname or base URL');
+const source=cfg.source||'kc-a5-source', base=cfg.base||'https://'+cfg.hostname, realm='replacement-proof';
 const run=(cmd,args,input)=>execFileSync(cmd,args,{input,encoding:'utf8',timeout:650000,maxBuffer:32*1024*1024,env:{...process.env,HELM_CACHE_HOME:path.join(state,'helm-cache')}});
 assert(cfg.candidateRelease,'explicit candidate release is required');
 assert(['0.3.0','0.8.0'].includes(cfg.baselineRelease),'select the exact supported baseline fixture release');
@@ -127,7 +131,7 @@ async function fallbackScenario(){
  return{access,boundary:'Explicit consequence-free synthetic fallback only; never automatic after ambiguous writes',targetStopped:true};
 }
 async function replacementUpgradeScenario(){
- const ns='kc-a5-upgraded-replacement',final=await load('source-backup'),fixture=await load('fixture');
+ const ns=namespace('upgraded-replacement'),final=await load('source-backup'),fixture=await load('fixture');
  assert.equal((await load('source-retirement')).confirmed,true,'operator source retirement must precede reconstruction; this scenario never contacts the predecessor');
  await install(ns,{backup:true,route:false,chart:cfg.candidateChart});const a=await ready(ns);
  assert.equal(a.status.operation.snapshot.id,final.snapshotID);assert.equal(sql(ns,'SELECT version FROM migration_model ORDER BY update_time DESC LIMIT 1'),'26.6.2');
@@ -144,13 +148,13 @@ async function replacementUpgradeScenario(){
 }
 async function interruptionScenario(){
  assert.equal(cfg.sourceVersion,'26.6.1','migration interruption requires an actual 26.6.1 source backup, not same-version 26.6.2');
- const ns='kc-a5-interrupted';await install(ns,{backup:true,route:false,chart:cfg.candidateChart,replicas:0});
+ const ns=scope(cfg.interruptionNamespace||namespace('interrupted'));await install(ns,{backup:true,route:false,chart:cfg.candidateChart,replicas:0});
  await until('empty database',()=>app(ns),a=>a.status?.state?.classification==='Absent');
  const lock=async table=>{
   const child=spawn('kubectl',['--kubeconfig',cfg.kubeconfig,'-n',ns,'exec','-i','keycloak-db-0','--','psql','-X','-U','postgres','-d','keycloak','-At','-v','ON_ERROR_STOP=1'],{stdio:['pipe','pipe','pipe']});let output='',errorOutput='';
-  child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>errorOutput+=b);const ended=new Promise(resolve=>child.on('exit',resolve));child.stdin.write(`BEGIN; LOCK TABLE ${table} IN SHARE MODE; SELECT 'held';\n`);
+  child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>errorOutput+=b);child.stdin.on('error',e=>errorOutput+=' '+e.message);const ended=new Promise(resolve=>child.on('exit',resolve));child.stdin.write(`BEGIN; LOCK TABLE ${table} IN SHARE MODE; SELECT 'held';\n`);
   await until('native lock '+table,()=>output,s=>s.includes('held'),30);
-  return async()=>{child.stdin.end('COMMIT;\n\\q\n');assert.equal(await ended,0,errorOutput)};
+  return async(expectDatabaseShutdown=false)=>{if(child.exitCode===null)child.stdin.end('COMMIT;\n\\q\n');const code=await ended;if(expectDatabaseShutdown)assert.notEqual(code,0,'whole-stop must terminate the database connection');else assert.equal(code,0,errorOutput)};
  };
  let release=await lock('pg_catalog.pg_class');
  intent(ns,{'application.replicas':1});
@@ -163,8 +167,11 @@ async function interruptionScenario(){
   k('-n',ns,'scale','deployment/keycloak-controller','--replicas=1');
   await until('native migration blocked',()=>sql(ns,"SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query ILIKE '%migration_model%'"),n=>Number(n)>0);
   const executing=workload(ns);k('-n',ns,'rollout','restart','deployment/keycloak-controller');k('-n',ns,'rollout','status','deployment/keycloak-controller','--timeout=120s');assert.deepEqual(workload(ns),executing);
-  intent(ns,{'application.replicas':0});await until('migration serving process stopped',()=>app(ns),a=>a.status?.application?.activePods===0);
- }finally{await release()}
+  intent(ns,{running:false});await stopped(ns);
+ }finally{await release(true)}
+ assert.equal(app(ns).spec.application.replicas,1,'whole-stop must preserve the selected replica count');
+ intent(ns,{running:true,'application.replicas':0});
+ k('-n',ns,'wait','statefulset/keycloak-db','--for=jsonpath={.status.readyReplicas}=1','--timeout=180s');
  assert.equal(sql(ns,'SELECT version FROM migration_model ORDER BY update_time DESC LIMIT 1'),'26.6.1');
  intent(ns,{'application.replicas':1});await until('interrupted migration refusal',()=>app(ns),a=>condition(a,'Degraded'));assert.equal(json('-n',ns,'get','deployment/keycloak').spec.replicas,0);assert(!routes().includes(ns));
  intent(ns,{running:false});await stopped(ns);
@@ -180,7 +187,7 @@ async function bypassScenario(){
 async function downgradeScenario(){
  const active=routes();assert.equal(active.length,1);const ns=scope(active[0]);assert.notEqual(ns,source);
  const before={version:sql(ns,'SELECT version FROM migration_model ORDER BY update_time DESC LIMIT 1'),users:sql(ns,'SELECT count(*) FROM user_entity'),workload:workload(ns)};
- const target='kc-a5-unsupported-package';assert(!json('get','namespaces').items.some(n=>n.metadata.name===target),'occupied refusal target');
+ const target=namespace('unsupported-package');assert(!json('get','namespaces').items.some(n=>n.metadata.name===target),'occupied refusal target');
  k('create','namespace',target);const values=await load(source+'-values'),service=modernBaseline?values.services[values.instance]:values;service.ingress.enabled=false;service.application.replicas=0;await save('unsupported-package-values',values);
  let refusal;try{run('helm',['install','keycloak',cfg.baselineChart,'--kubeconfig',cfg.kubeconfig,'-n',target,'--skip-crds','-f',path.join(state,'unsupported-package-values.json'),'--wait=legacy','--timeout','2m'])}catch(error){refusal=String(error.stderr)}
  assert(refusal&&/no matches for kind|resource mapping not found|v1alpha1|unsupported/i.test(refusal),'old package must fail schema admission on a new target, not mutate migrated state');
@@ -189,13 +196,13 @@ async function downgradeScenario(){
  return{oldPackageRefused:true,independentTarget:true,activeDataUnchanged:true,boundary:'API-incompatible old package refused before execution; not an in-place native downgrade exercise'};
 }
 async function openCandidateScenario(){
- const ns='kc-a5-upgraded-replacement',before=workload(ns);intent(ns,{'ingress.maintenance':false,'backup.suspend':false});await ready(ns);assert.deepEqual(workload(ns),before);await oidc();
+ const ns=namespace('upgraded-replacement'),before=workload(ns);intent(ns,{'ingress.maintenance':false,'backup.suspend':false});await ready(ns);assert.deepEqual(workload(ns),before);await oidc();
  const external=externalHTTP();assert.equal(external,'200');
  await admin('POST',`realms/${realm}/users`,{username:'post-migration-proof',enabled:true});
  const user=(await admin('GET',`realms/${realm}/users?username=post-migration-proof&exact=true`))[0];assert(user?.id);
  const capture=await backup(ns,'candidate');assert.equal(capture.applicationUID,app(ns).metadata.uid);assert.equal(capture.packageRelease,cfg.candidateRelease);
  intent(ns,{running:false,'ingress.enabled':false});await stopped(ns);
- const retry='kc-a5-subsequent';await install(retry,{backup:true,route:false,chart:cfg.candidateChart});assert.equal(app(retry).status.operation.snapshot.id,capture.snapshotID);
+ const retry=namespace('subsequent');await install(retry,{backup:true,route:false,chart:cfg.candidateChart});assert.equal(app(retry).status.operation.snapshot.id,capture.snapshotID);
  assert.equal(sql(retry,"SELECT id FROM user_entity WHERE username='post-migration-proof'"),user.id);
  intent(retry,{'ingress.enabled':true});await ready(retry);await boundary(retry);assert.equal((await oidc()).subject,(await load('fixture')).userID);
  return{namespace:ns,normalUserHTTP:external,snapshot:capture.snapshotID,backupApplicationUID:capture.applicationUID,routingOnlyUnchanged:true,subsequentRestoredUser:user.id};

@@ -8,11 +8,14 @@ import path from 'node:path';
 
 const state = path.resolve(process.env.KC_A4_STATE || '.lab/kc-a4');
 const cfg = JSON.parse(await readFile(path.join(state, 'runtime.json')));
+const namespacePrefix=cfg.namespacePrefix||'kc-a4-';
+assert.match(namespacePrefix,/^kc-a4-[a-z0-9-]*$/);
+const namespace=name=>namespacePrefix+name;
 const secrets = JSON.parse(await readFile(path.join(state, 'credentials.json')));
 const ca = await readFile(path.join(state, 'repository.crt'), 'utf8');
 // Source fixture uses this exact candidate API; historical migrations live in A5.
 const sourceValues = JSON.parse(await readFile(path.join(state, 'source-values.json')));
-const source = cfg.source || 'kc-a4-source';
+const source = cfg.source || namespace('source');
 const base = sourceValues.configuration.hostname;
 const realm = 'recovery-proof';
 const repository = cfg.repository || 'rest:https://backup-store.kc-a4-repository.svc/keycloak/';
@@ -182,7 +185,7 @@ async function sourceScenario() {
 }
 async function freshScenario() {
   const cases=[];
-  for(const [name,options] of [['kc-a4-no-repo',{backup:false,identity:'recovery'}],['kc-a4-no-match',{identity:'kc-a4-empty',instance:'recovery'}]]) {
+  for(const [name,options] of [[namespace('no-repo'),{backup:false,identity:'recovery'}],[namespace('no-match'),{identity:'kc-a4-empty',instance:'recovery'}]]) {
     await install(name,options);const a=await ready(name);assert.equal(sql(name,"SELECT count(*) FROM realm WHERE name='master'"),'1');assert.equal(sql(name,"SELECT count(*) FROM realm WHERE name='recovery-proof'"),'0');
     const rec=nativeRecord(name);if(options.backup===false)assert.equal(rec,null);else{assert.equal(rec.phase,'Complete');assert.equal(rec.snapshotID,'');assert.equal(rec.initializationStarted,true)}
     cases.push({namespace:name,state:a.status.state,record:rec});intent(name,{running:false});await stopped(name);
@@ -190,7 +193,7 @@ async function freshScenario() {
 }
 async function vanillaScenario() {
   const results=[];
-  for(const ns of ['kc-a4-no-repo','kc-a4-no-match']) {
+  for(const ns of [namespace('no-repo'),namespace('no-match')]) {
     await activate(ns);
     const t=await token({realm:'master',grant_type:'password',client_id:'admin-cli',username:'admin',password:secrets.admin});
     const response=await fetch(base+'/admin/realms/master',{headers:{Authorization:'Bearer '+t.access_token}});
@@ -201,7 +204,7 @@ async function vanillaScenario() {
   return results;
 }
 
-async function restoreScenario(ns='kc-a4-restored') {
+async function restoreScenario(ns=namespace('restored')) {
   const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
   intent(source,{running:false,'ingress.enabled':false});await stopped(source);
   k('-n',source,'scale','deployment/keycloak-controller','--replicas=0');
@@ -227,9 +230,9 @@ async function fallbackScenario() {
   k('-n',source,'rollout','status','deployment/keycloak-controller','--timeout=180s');
   await activate(source);const original=await oidc();
   assert.equal(original.subject,fixture.userID);assert.equal(original.keyID,fixture.keyID);
-  await activate('kc-a4-restored');const restored=await oidc();
+  await activate(namespace('restored'));const restored=await oidc();
   assert.equal(restored.subject,fixture.userID);assert.equal(restored.keyID,fixture.keyID);
-  return {sourceRelease:app(source).spec.packageRelease,targetRelease:app('kc-a4-restored').spec.packageRelease,identityPreserved:true,boundary:'Synthetic login activity only; no consequential writes or external effects',restoredTargetReactivated:true};
+  return {sourceRelease:app(source).spec.packageRelease,targetRelease:app(namespace('restored')).spec.packageRelease,identityPreserved:true,boundary:'Synthetic login activity only; no consequential writes or external effects',restoredTargetReactivated:true};
 }
 
 async function holdCatalog(ns, table='pg_catalog.pg_class') {
@@ -242,7 +245,7 @@ async function holdCatalog(ns, table='pg_catalog.pg_class') {
   return async()=>{child.stdin.end('COMMIT;\n\\q\n');await ended};
 }
 async function initializerScenario() {
-  const ns='kc-a4-init-lock';await install(ns,{replicas:0,identity:'kc-a4-lock'});
+  const ns=namespace('init-lock');await install(ns,{replicas:0,identity:'kc-a4-lock'});
   await until('empty initializer target',()=>app(ns),a=>a.status?.application?.activePods===0&&a.status.state.classification==='Absent');
   k('label','namespace',ns,'kc-a4-lab-');
   intent(ns,{'application.replicas':1});
@@ -282,8 +285,32 @@ async function recoveryBoundary(ns) {
   assert.equal(sql(ns,`SELECT count(*) FROM pg_locks WHERE pid=${backend[0].pid} AND locktype='advisory' AND granted`),'1');
   return {release,backend:backend[0],job};
 }
+async function stopDuringRestoreScenario() {
+  const ns=namespace('stop-restore');await install(ns,{replicas:0});
+  const fence=await recoveryBoundary(ns);
+  try {
+    intent(ns,{running:false});
+    const stopping=await until('whole-stop observes admitted restore',()=>app(ns),a=>a.status.observedGeneration===a.metadata.generation&&a.status.state.reason==='ApplicationStopping');
+    assert(!condition(stopping,'Stopped'));
+    assert.equal(json('-n',ns,'get','statefulset/keycloak-db').spec.replicas,1,'admitted restore still needs PostgreSQL');
+    assert.equal(json('-n',ns,'get','deployments').items.filter(d=>d.metadata.name==='keycloak').length,0);
+  } finally {await fence.release()}
+  await stopped(ns);
+  assert.equal(json('-n',ns,'get','job',fence.job.metadata.name).status.succeeded,1);
+  assert.equal(json('-n',ns,'get','deployments').items.filter(d=>d.metadata.name==='keycloak').length,0,'completion must not start Keycloak while stopped');
+  k('-n',ns,'rollout','restart','deployment/keycloak-controller');
+  k('-n',ns,'rollout','status','deployment/keycloak-controller','--timeout=180s');await stopped(ns);
+  const jobUID=fence.job.metadata.uid;
+  intent(ns,{running:true});
+  const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
+  await assertRestored(ns,fixture.snapshotID);await activate(ns);
+  assert.equal((await oidc()).subject,fixture.userID);
+  assert.equal(json('-n',ns,'get','job',fence.job.metadata.name).metadata.uid,jobUID,'explicit start must consume completion without replaying restore');
+  intent(ns,{running:false,'ingress.enabled':false});await stopped(ns);
+  return {namespace:ns,jobUID,restoreDrainedBeforeDatabaseStop:true,completionDidNotWakeStoppedApplication:true,explicitStartConsumedSameRestore:true,oidc:true};
+}
 async function interruptionScenario() {
-  const rollback='kc-a4-rollback';await install(rollback,{replicas:0});
+  const rollback=namespace('rollback');await install(rollback,{replicas:0});
   let fence=await recoveryBoundary(rollback);
   const pods=json('-n',rollback,'get','pods','-l','job-name='+fence.job.metadata.name).items;
   assert.equal(pods.length,1);
@@ -301,7 +328,7 @@ async function interruptionScenario() {
   assert.equal(nativeRecord(rollback),null);
   intent(rollback,{running:false});await stopped(rollback);
 
-  const committed='kc-a4-commit-loss';await install(committed,{replicas:0});
+  const committed=namespace('commit-loss');await install(committed,{replicas:0});
   fence=await recoveryBoundary(committed);
   const duplicate=structuredClone(fence.job);
   duplicate.metadata={name:'duplicate-native-worker',namespace:committed,ownerReferences:fence.job.metadata.ownerReferences};
@@ -333,12 +360,13 @@ async function interruptionScenario() {
   assert.equal(retained.status.application.activePods,0);
   assert(!json('-n',committed,'get','jobs').items.some(j=>j.metadata.name===fence.job.metadata.name));
   assert.equal(nativeRecord(committed).phase,'Restored');
+  intent(committed,{running:false});await stopped(committed);
   // Retry is a new empty target, not repair or replay of the ambiguous target.
   const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
-  const retry='kc-a4-independent-retry';await install(retry);
+  const retry=namespace('independent-retry');await install(retry);
   const restored=await assertRestored(retry,fixture.snapshotID);await activate(retry);
   assert.equal((await oidc()).subject,fixture.userID);
-  return {rollback:{reason:refused.status.state.reason,reentry:after.status.state.reason,jobUID:pods[0].metadata.ownerReferences[0].uid,nativePhase:null,tables:0},committed:{jobFailed:failed.status.failed,stopObserved:true,duplicateRefused:true,continuationRefused:true},independentRetry:restored};
+  return {rollback:{reason:refused.status.state.reason,reentry:after.status.state.reason,jobUID:pods[0].metadata.ownerReferences[0].uid,nativePhase:null,tables:0},committed:{jobFailed:failed.status.failed,wholeApplicationStopped:true,duplicateRefused:true,continuationRefused:true},independentRetry:restored};
 }
 async function fixturePod() {
   const found=json('-n','kc-a4-repository','get','pods').items.find(p=>p.metadata.name==='fixture');
@@ -367,9 +395,9 @@ async function invalidRepository(kind) {
 }
 async function refusalScenario(resume) {
   const cases=[
-    ['kc-a4-lookup-error',{readerPassword:'deliberately-invalid'}],
+    [namespace('lookup-error'),{readerPassword:'deliberately-invalid'}],
   ];
-  for(const kind of ['bad-identity','bad-integrity','incomplete','unreadable-snapshot'])cases.push(['kc-a4-'+kind,{repo:resume==='resume'?fixtureRepository(kind):await invalidRepository(kind)}]);
+  for(const kind of ['bad-identity','bad-integrity','incomplete','unreadable-snapshot'])cases.push([namespace(kind),{repo:resume==='resume'?fixtureRepository(kind):await invalidRepository(kind)}]);
   const results=[];
   for(const [ns,options] of cases) {
     const existing=json('get','namespaces').items.find(n=>n.metadata.name===ns);
@@ -394,20 +422,20 @@ async function refusalScenario(resume) {
   }return results;
 }
 async function subsequentScenario() {
-  const ns='kc-a4-independent-retry';await activate(ns);
+  const ns=namespace('independent-retry');await activate(ns);
   const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
   const user=(await admin('GET',`realms/${realm}/users?username=recovery-user&exact=true`))[0];
   user.firstName='Subsequent';await admin('PUT',`realms/${realm}/users/${user.id}`,user);
   assert.equal(sql(ns,`SELECT first_name FROM user_entity WHERE id='${fixture.userID}'`),'Subsequent');
   const captured=await backup(ns,'subsequent');
   intent(ns,{running:false,'ingress.enabled':false});await stopped(ns);
-  const target='kc-a4-subsequent';await install(target);
+  const target=namespace('subsequent');await install(target);
   const result=await assertRestored(target,captured.snapshotID,'Subsequent');await activate(target);
   assert.equal((await oidc()).subject,fixture.userID);
   return {...result,sourceApplicationUID:captured.applicationUID,newWorkPreserved:true,restoredSubsequentBackup:true,oidc:true};
 }
 async function bypassScenario() {
-  const ns='kc-a4-subsequent';await activate(ns);
+  const ns=namespace('subsequent');await activate(ns);
   const before=json('-n',ns,'get','jobs').items.map(j=>j.metadata.uid).sort();
   k('-n',ns,'delete','secret','keycloak-backup-reader','keycloak-bootstrap','keycloak-database-admin');
   k('-n',ns,'rollout','restart','deployment/keycloak');k('-n',ns,'rollout','status','deployment/keycloak','--timeout=600s');
@@ -417,7 +445,7 @@ async function bypassScenario() {
   return {namespace:ns,unchangedJobUIDs:before,oidc:true,unavailableSecrets:['reader','bootstrap','database-admin']};
 }
 async function staleScenario() {
-  const ns='kc-a4-subsequent';await activate(ns);await ready(ns);
+  const ns=namespace('subsequent');await activate(ns);await ready(ns);
   const before=json('-n',ns,'get','deployment/keycloak');
   const pods=json('-n',ns,'get','pods','-l','app.kubernetes.io/name=keycloak').items.map(p=>p.metadata.uid);
   const release=await holdCatalog(ns,'pg_catalog.pg_shdescription');
@@ -434,7 +462,7 @@ async function staleScenario() {
       assert.equal(sql(ns,`SELECT count(*) FROM pg_stat_activity WHERE client_addr='${controller.status.podIP}' AND application_name='bartl-keycloak'`),'0');
     }
   } finally {await release()}
-  const foreign='kc-a4-foreign-marker';await install(foreign,{replicas:0});
+  const foreign=namespace('foreign-marker');await install(foreign,{replicas:0});
   await until('empty foreign marker target',()=>app(foreign),a=>a.status?.application?.activePods===0&&a.status.state.classification==='Absent');
   const original=sql(ns,"SELECT shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()");
   sql(foreign,"COMMENT ON DATABASE keycloak IS '"+original.replaceAll("'","''")+"'");
@@ -446,7 +474,7 @@ async function staleScenario() {
 }
 
 async function unsupportedScenario() {
-  const ns='kc-a4-unsupported';await install(ns);await ready(ns);
+  const ns=namespace('unsupported');await install(ns);await ready(ns);
   intent(ns,{'application.replicas':0});await keycloakZero(ns);
   sql(ns,"UPDATE migration_model SET version='26.5.0' WHERE update_time=(SELECT max(update_time) FROM migration_model)");
   const users=sql(ns,'SELECT count(*) FROM user_entity');
@@ -592,7 +620,7 @@ const liveConfig=JSON.parse(k('config','view','--minify','-o','json'));
 assert.equal(liveConfig.clusters[0].cluster.server,cfg.server,'refusing an unexpected cluster API');
 await mkdir(path.join(state,'results'),{recursive:true,mode:0o700});
 const scenario=process.argv[2];
-const scenarios={source:sourceScenario,fresh:freshScenario,'initial-stopped':initialStoppedScenario,restore:restoreScenario,initializer:initializerScenario,interruption:interruptionScenario,refusal:refusalScenario,subsequent:subsequentScenario,bypass:bypassScenario,stale:staleScenario,ordinary:ordinaryScenario,conflict:conflictScenario,fallback:fallbackScenario,vanilla:vanillaScenario,unsupported:unsupportedScenario};
+const scenarios={source:sourceScenario,fresh:freshScenario,'initial-stopped':initialStoppedScenario,'stop-during-restore':stopDuringRestoreScenario,restore:restoreScenario,initializer:initializerScenario,interruption:interruptionScenario,refusal:refusalScenario,subsequent:subsequentScenario,bypass:bypassScenario,stale:staleScenario,ordinary:ordinaryScenario,conflict:conflictScenario,fallback:fallbackScenario,vanilla:vanillaScenario,unsupported:unsupportedScenario};
 if(!scenarios[scenario])throw Error('Unknown scenario: '+scenario);
 const started=new Date().toISOString();
 try {const result=await scenarios[scenario](...process.argv.slice(3));await save('results/'+scenario+'.json',{started,completed:new Date().toISOString(),scenario,result});console.log(JSON.stringify({scenario,status:'passed',result}));}

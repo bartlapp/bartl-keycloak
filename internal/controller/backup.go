@@ -8,6 +8,7 @@ import (
 	"time"
 
 	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha2"
+	"github.com/floriankesslergmbh/bartl-keycloak/internal/native"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -79,7 +80,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.KeycloakApplication, pvc
 			StartingDeadlineSeconds:    ptr(int64(300)),
 			SuccessfulJobsHistoryLimit: ptr(int32(3)), FailedJobsHistoryLimit: ptr(int32(3)),
 			JobTemplate: batchv1.JobTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels(a, "keycloak-backup")}, Spec: batchv1.JobSpec{
-				BackoffLimit: ptr(int32(0)), ActiveDeadlineSeconds: ptr(int64(1800)),
+				BackoffLimit: ptr(int32(0)), ActiveDeadlineSeconds: ptr(native.BackupJobDeadlineSeconds),
 				Completions: ptr(int32(1)), Parallelism: ptr(int32(1)),
 				Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels(a, "keycloak-backup")}, Spec: corev1.PodSpec{
 					ServiceAccountName: "keycloak-workload", AutomountServiceAccountToken: ptr(false),

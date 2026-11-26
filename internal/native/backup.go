@@ -50,11 +50,21 @@ type captureManifest struct {
 	DumpBytes       int64  `json:"dumpBytes"`
 }
 
+const backupPhaseTimeout = 25 * time.Minute
+
+// BackupJobDeadlineSeconds covers one retained publication and one fresh capture,
+// plus time for native child termination and Kubernetes completion observation.
+const BackupJobDeadlineSeconds = int64((2*backupPhaseTimeout + 5*time.Minute) / time.Second)
+
 // Backup performs one finite native capture. No Kubernetes credentials or API
 // calls are used. Repository initialization and separate destructive maintenance
 // authority are the installation administrator's responsibility.
 func Backup(parent context.Context, output io.Writer) error {
-	ctx, cancel := context.WithTimeout(parent, 25*time.Minute)
+	return backup(parent, output, true)
+}
+
+func backup(parent context.Context, output io.Writer, retryRetained bool) error {
+	ctx, cancel := context.WithTimeout(parent, backupPhaseTimeout)
 	defer cancel()
 	result := BackupResult{
 		FormatVersion: 1,
@@ -157,6 +167,9 @@ func Backup(parent context.Context, output io.Writer) error {
 	retained := false
 	if _, err := os.Stat(pending); err == nil {
 		retained = true
+		if !retryRetained {
+			return errors.New("another operation left retained work before fresh capture; no current backup completed")
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("retained capture observation failed")
 	} else {
@@ -328,7 +341,7 @@ func Backup(parent context.Context, output io.Writer) error {
 		if err := lock.Close(); err != nil {
 			return err
 		}
-		return Backup(parent, output)
+		return backup(parent, output, false)
 	}
 	return json.NewEncoder(output).Encode(result)
 }
