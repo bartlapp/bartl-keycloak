@@ -46,12 +46,18 @@ umask 077
 
 ### Obtain the release
 
-For a published v1alpha2 release, download the latest stable chart into disposable staging and read its version. Until that release exists, qualification must supply its exact retained chart through `CHART_STAGE/bartl-keycloak`; the registry command below does not yet obtain this candidate. Helm's default latest selection excludes prereleases:
+Select the exact supplied candidate archive through `CHART_ARCHIVE` and verify its checksum against its delivery record. Once a v1alpha2 release is published, omitting that variable selects the latest stable registry release. The API check below rejects historical packages before installation; Helm's default latest selection excludes prereleases.
 
 ```bash
 mkdir -p "$WORK_DIR/packages"
 CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
-helm pull oci://ghcr.io/bartlapp/bartl-keycloak --untar --untardir "$CHART_STAGE"
+if [ -n "${CHART_ARCHIVE:-}" ]; then
+  tar -xzf "$CHART_ARCHIVE" -C "$CHART_STAGE"
+else
+  helm pull oci://ghcr.io/bartlapp/bartl-keycloak --untar --untardir "$CHART_STAGE"
+fi
+helm show chart "$CHART_STAGE/bartl-keycloak" |
+  yq -e '.annotations."keycloak.bartl.sh/supported-api" == "keycloak.bartl.sh/v1alpha2"' >/dev/null
 export PACKAGE_VERSION
 PACKAGE_VERSION=$(helm show chart "$CHART_STAGE/bartl-keycloak" | yq -er '.version')
 ```
@@ -381,11 +387,13 @@ This is same-release static configuration, not a package upgrade. [Resume the de
 
 ```bash
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+  --force-conflicts --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 ```
 
 For enabled serving intent, require current-generation Ready and useful behavior. For intentional whole-application stop, require current-generation Stopped instead. Do not wait for Ready on a stopped application. Package changes use [replacement](RECOVERY.md), never in-place upgrade.
+
+`--force-conflicts` transfers the chart's static fields from the initial `kubectl create` field manager to Helm. The chart must continue to omit runtime fields; this flag does not authorize replacing runtime intent.
 
 ### Restart Keycloak
 
@@ -480,7 +488,7 @@ Retain operator access to the backed-up realm independently for post-recovery ac
 
 ```bash
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+  --force-conflicts --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
 ```
 
 ### Capture a backup

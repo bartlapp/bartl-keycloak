@@ -25,7 +25,7 @@ const condition=(a,t)=>a.status?.conditions?.some(c=>c.type===t&&c.status==='Tru
 async function until(label,observe,accept,seconds=600){let last;const end=Date.now()+seconds*1000;while(Date.now()<end){last=await observe();if(accept(last))return last;await new Promise(r=>setTimeout(r,1000))}throw Error(label+' timed out: '+JSON.stringify(last))}
 const ready=ns=>until(ns+' Ready',()=>app(ns),a=>condition(a,'Ready'));
 const zero=async ns=>{await until(ns+' Keycloak zero',()=>app(ns),a=>a.status?.application?.activePods===0&&condition(a,'Quiescent'));assert.equal(json('-n',ns,'get','statefulset/keycloak-db').status.readyReplicas,1);assert.equal(json('-n',ns,'get','pods','-l','app.kubernetes.io/name=keycloak').items.length,0);if(ns!==source)assert(!condition(app(ns),'Stopped'))};
-const stopped=async ns=>{assert.notEqual(ns,source,'historical source uses zero plus explicit retirement');await until(ns+' whole application stopped',()=>app(ns),a=>condition(a,'Stopped')&&condition(a,'Quiescent'));for(const component of ['keycloak','keycloak-db'])assert.equal(json('-n',ns,'get','pods','-l','app.kubernetes.io/name='+component).items.length,0)};
+const stopped=async ns=>{assert.notEqual(ns,source,'historical source uses zero plus explicit retirement');await until(ns+' whole application stopped',()=>app(ns),a=>condition(a,'Stopped'));for(const component of ['keycloak','keycloak-db'])assert.equal(json('-n',ns,'get','pods','-l','app.kubernetes.io/name='+component).items.length,0);assert(json('-n',ns,'get','pods','-l','app.kubernetes.io/name=keycloak-backup').items.every(p=>['Succeeded','Failed'].includes(p.status.phase)&&!p.metadata.deletionTimestamp))};
 // Each historical baseline retains its own released Helm interface.
 const installationFile=ns=>path.join(state,scope(ns),'installation.yaml');
 function candidateValues(values){
@@ -48,7 +48,7 @@ function intent(ns,settings){
  for(const [key,value]of Object.entries(settings))args.push('--set',(modernBaseline?'services.identity-provider.':'')+key+'='+value);
  args.push('--wait=legacy','--timeout','10m');run('helm',args);
 }
-const backupConfig={repository:'rest:https://backup-store.kc-a5-repository.svc/keycloak/',readerSecret:'keycloak-backup-reader',writerSecret:'keycloak-backup-writer',schedule:'17 3 * * *',timeZone:'Europe/Berlin',suspend:true};
+const backupConfig={repository:cfg.repository||'rest:https://backup-store.kc-a5-repository.svc/keycloak/',readerSecret:'keycloak-backup-reader',writerSecret:'keycloak-backup-writer',schedule:'17 3 * * *',timeZone:'Europe/Berlin',suspend:true};
 async function install(ns,{backup=false,route=true,chart=cfg.baselineChart,replicas=1,running=true}={}){
  scope(ns);const ca=await readFile(path.join(state,'repository.crt'),'utf8'),candidate=chart===cfg.candidateChart;
  if(candidate)assert(!json('get','namespaces').items.some(n=>n.metadata.name===ns),'occupied target slot');

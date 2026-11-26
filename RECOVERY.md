@@ -90,6 +90,8 @@ Use retained source PVC/PV identities where available. A return is possible only
 
 **Choose the target.** Choose an unused deployment key and an unoccupied blue/green namespace on the supplied target cluster. Slots exchange roles only after a retention decision releases the previous placement; never delete an occupied slot to make creation pass. A source using a pre-v1alpha2 CRD requires a **new target cluster**. No CRD conversion, stored-object migration or adoption is part of this procedure. Acquire the candidate as described in [Obtain the release](README.md#obtain-the-release); normal latest stable acquisition does not yet select it. Keep the source package entry unchanged:
 
+For the supplied candidate, set `TARGET_CHART_ARCHIVE` to its checksum-verified archive. This selects the destination package independently of the source's retained chart.
+
 ```bash
 set -euo pipefail
 umask 077
@@ -100,7 +102,13 @@ export SOURCE_DEPLOYMENT
 export TARGET_PACKAGE=keycloak-recovery
 mkdir -p "$WORK_DIR/packages"
 TARGET_CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
-helm pull oci://ghcr.io/bartlapp/bartl-keycloak --untar --untardir "$TARGET_CHART_STAGE"
+if [ -n "${TARGET_CHART_ARCHIVE:-}" ]; then
+  tar -xzf "$TARGET_CHART_ARCHIVE" -C "$TARGET_CHART_STAGE"
+else
+  helm pull oci://ghcr.io/bartlapp/bartl-keycloak --untar --untardir "$TARGET_CHART_STAGE"
+fi
+helm show chart "$TARGET_CHART_STAGE/bartl-keycloak" |
+  yq -e '.annotations."keycloak.bartl.sh/supported-api" == "keycloak.bartl.sh/v1alpha2"' >/dev/null
 TARGET_PACKAGE_VERSION=$(helm show chart "$TARGET_CHART_STAGE/bartl-keycloak" | yq -er '.version')
 export TARGET_PACKAGE_VERSION
 MATCHING_PACKAGE=$(yq -o=json '.packages // {}' "$VALUES" |
@@ -368,7 +376,7 @@ Confirm retirement of every source write path, including a returning predecessor
 ```bash
 yq -i '.operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+  --force-conflicts --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 2 \
@@ -429,7 +437,7 @@ yq -i '
   .operations.deployments[strenv(DEPLOYMENT)].backupSuspend = false
 ' "$VALUES"
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+  --force-conflicts --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
 

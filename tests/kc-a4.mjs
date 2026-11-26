@@ -15,7 +15,8 @@ const sourceValues = JSON.parse(await readFile(path.join(state, 'source-values.j
 const source = 'kc-a4-source';
 const base = sourceValues.configuration.hostname;
 const realm = 'recovery-proof';
-const repository = 'rest:https://backup-store.kc-a4-repository.svc/keycloak/';
+const repository = cfg.repository || 'rest:https://backup-store.kc-a4-repository.svc/keycloak/';
+const fixtureRepository = kind => 'rest:'+new URL('../'+kind+'/',repository.slice('rest:'.length)).href;
 const run = (cmd, args, input) => execFileSync(cmd, args, {
   input, encoding: 'utf8', timeout: 650000, maxBuffer: 32 * 1024 * 1024,
   env: {...process.env, HELM_CACHE_HOME: path.join(state, 'helm-cache')},
@@ -37,7 +38,12 @@ async function until(label, observe, accept, seconds=600) {
   throw Error(label+' timed out: '+JSON.stringify(last));
 }
 const ready = ns => until(ns+' Ready',()=>app(ns),a=>condition(a,'Ready'));
-const stopped = ns => until(ns+' whole application Stopped',()=>app(ns),a=>condition(a,'Stopped') && condition(a,'Quiescent'));
+const stopped = async ns => {
+  const a=await until(ns+' whole application Stopped',()=>app(ns),a=>condition(a,'Stopped'));
+  for(const component of ['keycloak','keycloak-db']) assert.equal(json('-n',ns,'get','pods','-l','app.kubernetes.io/name='+component).items.length,0);
+  assert(json('-n',ns,'get','pods','-l','app.kubernetes.io/name=keycloak-backup').items.every(p=>['Succeeded','Failed'].includes(p.status.phase)&&!p.metadata.deletionTimestamp));
+  return a;
+};
 const keycloakZero = ns => until(ns+' Keycloak zero with database running',()=>app(ns),a=>{
   assert.equal(a.spec.running,true);
   return a.status?.application?.activePods===0 && condition(a,'Quiescent') &&
@@ -56,7 +62,7 @@ function intent(ns, settings) {
 }
 function staticApply(ns){
   run('helm',['upgrade','keycloak',cfg.chart,'--kubeconfig',cfg.kubeconfig,'-n',scope(ns),
-    '--reset-values','-f',installationFile(ns),'--wait=legacy','--timeout','10m']);
+    '--force-conflicts','--reset-values','-f',installationFile(ns),'--wait=legacy','--timeout','10m']);
 }
 const backupConfig = {repository,readerSecret:'keycloak-backup-reader',writerSecret:'keycloak-backup-writer',schedule:'0 2 * * *',timeZone:'Etc/UTC',suspend:true};
 async function install(ns,{backup=true,replicas=1,running=true,identity='kc-a4',instance='keycloak',route=false,readerPassword=secrets.reader,bootstrap=true,repo=repository}={}) {
@@ -347,7 +353,7 @@ async function invalidRepository(kind) {
   const config=JSON.parse(fixtureExec(['restic','-r',dir,'cat','config']));
   if(kind==='unreadable-snapshot') {
     fixtureExec(['/bin/sh','-ec',`printf corrupt > '${dir}/snapshots/${'a'.repeat(64)}'`]);
-    return 'rest:https://backup-store.kc-a4-repository.svc/'+kind+'/';
+    return fixtureRepository(kind);
   }
   const manifest=JSON.parse(fixtureExec(['restic','-r','/repository/keycloak','dump',fixture.snapshotID,'/manifest.json']));
   manifest.repositoryID=config.id;
@@ -357,13 +363,13 @@ async function invalidRepository(kind) {
   if(kind!=='incomplete')fixtureExec(['/bin/sh','-ec',`restic -r /repository/keycloak dump '${fixture.snapshotID}' /keycloak.dump > '${temporary}/keycloak.dump'`]);
   const files=kind==='incomplete'?'manifest.json':'manifest.json keycloak.dump';
   fixtureExec(['/bin/sh','-ec',`cd '${temporary}'; restic -r '${dir}' backup --host kc-a4 --tag installation=kc-a4 --tag instance=keycloak ${files}`]);
-  return 'rest:https://backup-store.kc-a4-repository.svc/'+kind+'/';
+  return fixtureRepository(kind);
 }
 async function refusalScenario(resume) {
   const cases=[
     ['kc-a4-lookup-error',{readerPassword:'deliberately-invalid'}],
   ];
-  for(const kind of ['bad-identity','bad-integrity','incomplete','unreadable-snapshot'])cases.push(['kc-a4-'+kind,{repo:resume==='resume'?'rest:https://backup-store.kc-a4-repository.svc/'+kind+'/':await invalidRepository(kind)}]);
+  for(const kind of ['bad-identity','bad-integrity','incomplete','unreadable-snapshot'])cases.push(['kc-a4-'+kind,{repo:resume==='resume'?fixtureRepository(kind):await invalidRepository(kind)}]);
   const results=[];
   for(const [ns,options] of cases) {
     const existing=json('get','namespaces').items.find(n=>n.metadata.name===ns);
