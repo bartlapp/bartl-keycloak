@@ -1,5 +1,5 @@
 {{- define "keycloak.controllerImage" -}}
-ghcr.io/bartlapp/bartl-keycloak-controller@sha256:a2979d6d645cab1304f6abc84752e9f7c0471132a9b6c2c613216412c4c01213
+ghcr.io/bartlapp/bartl-keycloak-controller@sha256:44ff669fbf423397d316c92d53fdc4d6809cc1a9adb70ad257176879060b6562
 {{- end -}}
 {{- define "keycloak.backupImage" -}}
 ghcr.io/bartlapp/bartl-keycloak-backup@sha256:502cb861b5681d38c9ff6570913a1853cc99d5dab5f77c5b2c5d98754620ca7b
