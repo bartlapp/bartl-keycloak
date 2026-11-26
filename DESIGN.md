@@ -6,7 +6,7 @@ The [README](README.md) and linked [recovery runbook](RECOVERY.md) own operation
 
 Current stable release remains `0.8.0`, Keycloak 26.6.2, PostgreSQL 17.6, Restic 0.19.1 and CRD revision 3. Its API and in-place evidence are historical, not candidate qualification.
 
-This checkout implements the **unqualified `0.9.0-dev.3` v1alpha2 candidate**, governed by `bartl-app` `d1cd9702a50fe6b43afae7dfb63632fe2731ab28` and GmbH ADR-10 `84537f9`. It is not published or fully live-qualified. Supported native data transitions remain 26.6.1 → 26.6.2 and same-version 26.6.2 with PostgreSQL 17, not downgrades or PostgreSQL major upgrades. This pair needs no intermediate native hop. Exact candidate artifacts, all contract cases and standalone procedure execution require qualification; no historical check is silently reused.
+This checkout implements the **unqualified `0.9.0-dev.4` v1alpha2 candidate**, governed by `bartl-app` `d1cd9702a50fe6b43afae7dfb63632fe2731ab28` and GmbH ADR-10 `84537f9`. It is not published or fully live-qualified. Supported native data transitions remain 26.6.1 → 26.6.2 and same-version 26.6.2 with PostgreSQL 17, not downgrades or PostgreSQL major upgrades. This pair needs no intermediate native hop. Exact candidate artifacts, all contract cases and standalone procedure execution require qualification; no historical check is silently reused.
 
 The README uses Base's shared `load_deployment` context: each deployment directory sources its cluster `.envrc` and selects one recorded deployment. The loader checks cluster and directory identity and exports placement plus the normalized `$WORK_DIR/packages/<package>/<version>` chart root without network access. Current creation procedures generate the selectors; resumption uses retained selectors rather than a context-migration procedure.
 
@@ -153,7 +153,7 @@ The regression creates/removes its own database and role; without the variable i
 
 | File | Required fixture inputs |
 | --- | --- |
-| `runtime.json` | `kubeconfig`, `server`, exact candidate `chart`, fixture `backupImage`, and explicit `candidateRelease: "0.9.0-dev.3"`. Optional `source` selects a retained candidate source namespace; `repository` selects the supplied HTTPS fixture; `namespacePrefix` selects fresh `kc-a4-*` target placements without deleting prior runs. Never inherit a historical release default. |
+| `runtime.json` | `kubeconfig`, `server`, exact candidate `chart`, fixture `backupImage`, and explicit `candidateRelease` matching that chart. Optional `source` selects a retained candidate source namespace; `repository` selects the supplied HTTPS fixture; `fixturePath` identifies its native mounted repository; `namespacePrefix` selects fresh `kc-a4-*` target placements without deleting prior runs. Never inherit a historical release default. |
 | `credentials.json` | `admin`, `user`, `restic` encryption password, and REST authentication passwords `reader` and `writer`. |
 | `repository.crt` | Trusted repository CA certificate. |
 | `source-values.json` | Candidate fixture's HTTPS `configuration.hostname`, database settings, bootstrap Secret name and ingress settings; not an old Helm runtime interface. |

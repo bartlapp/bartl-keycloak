@@ -19,7 +19,9 @@ const source = cfg.source || namespace('source');
 const base = sourceValues.configuration.hostname;
 const realm = 'recovery-proof';
 const repository = cfg.repository || 'rest:https://backup-store.kc-a4-repository.svc/keycloak/';
-const fixtureRepository = kind => 'rest:'+new URL('../'+kind+'/',repository.slice('rest:'.length)).href;
+const fixtureRepository = kind => 'rest:'+new URL('../'+namespace(kind)+'/',repository.slice('rest:'.length)).href;
+const fixturePath=cfg.fixturePath||'/repository/keycloak';
+assert.match(fixturePath,/^\/repository\/[a-z0-9-]+$/);
 const run = (cmd, args, input) => execFileSync(cmd, args, {
   input, encoding: 'utf8', timeout: 650000, maxBuffer: 32 * 1024 * 1024,
   env: {...process.env, HELM_CACHE_HOME: path.join(state, 'helm-cache')},
@@ -376,19 +378,19 @@ async function fixturePod() {
 const fixtureExec = (args,input) => run('kubectl',['--kubeconfig',cfg.kubeconfig,'-n','kc-a4-repository','exec','-i','fixture','--',...args],input);
 async function invalidRepository(kind) {
   await fixturePod();const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
-  const dir='/repository/'+kind;const temporary='/tmp/'+kind;
+  const dir='/repository/'+namespace(kind);const temporary='/tmp/'+namespace(kind);
   fixtureExec(['/bin/sh','-ec',`mkdir '${temporary}'; restic -r '${dir}' init`]);
   const config=JSON.parse(fixtureExec(['restic','-r',dir,'cat','config']));
   if(kind==='unreadable-snapshot') {
     fixtureExec(['/bin/sh','-ec',`printf corrupt > '${dir}/snapshots/${'a'.repeat(64)}'`]);
     return fixtureRepository(kind);
   }
-  const manifest=JSON.parse(fixtureExec(['restic','-r','/repository/keycloak','dump',fixture.snapshotID,'/manifest.json']));
+  const manifest=JSON.parse(fixtureExec(['restic','-r',fixturePath,'dump',fixture.snapshotID,'/manifest.json']));
   manifest.repositoryID=config.id;
   if(kind==='bad-identity')manifest.installation='foreign';
   if(kind==='bad-integrity')manifest.dumpSHA256='0'.repeat(64);
   fixtureExec(['/bin/sh','-ec',`cat > '${temporary}/manifest.json'`],JSON.stringify(manifest));
-  if(kind!=='incomplete')fixtureExec(['/bin/sh','-ec',`restic -r /repository/keycloak dump '${fixture.snapshotID}' /keycloak.dump > '${temporary}/keycloak.dump'`]);
+  if(kind!=='incomplete')fixtureExec(['/bin/sh','-ec',`restic -r '${fixturePath}' dump '${fixture.snapshotID}' /keycloak.dump > '${temporary}/keycloak.dump'`]);
   const files=kind==='incomplete'?'manifest.json':'manifest.json keycloak.dump';
   fixtureExec(['/bin/sh','-ec',`cd '${temporary}'; restic -r '${dir}' backup --host kc-a4 --tag installation=kc-a4 --tag instance=keycloak ${files}`]);
   return fixtureRepository(kind);

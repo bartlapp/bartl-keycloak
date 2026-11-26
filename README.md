@@ -419,7 +419,14 @@ With the application enabled and PostgreSQL running:
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout restart statefulset/keycloak-db
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status statefulset/keycloak-db --timeout=10m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o json > "$INSTALL_DIR/restart-intent.json"
+jq -e '.spec.running == true' "$INSTALL_DIR/restart-intent.json"
+if jq -e '.spec.application.replicas > 0' "$INSTALL_DIR/restart-intent.json" >/dev/null; then
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
+else
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Quiescent --timeout=10m
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods -l app.kubernetes.io/name=keycloak
+fi
 ```
 
 Do not restart Keycloak or the controller as part of this operation. Verify login and retained state after native database reconnection. A rollout restart while stopped only changes the template; it must not create Pods or change `spec.running`.

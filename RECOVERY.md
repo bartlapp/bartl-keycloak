@@ -71,6 +71,7 @@ SOURCE_DEPLOYMENT=$DEPLOYMENT
 SOURCE_INSTANCE=$INSTANCE
 SOURCE_DIR=$INSTALL_DIR
 SOURCE_CONTEXT=$KUBE_CONTEXT
+SOURCE_KUBECONFIG=$KUBECONFIG
 SOURCE_NAMESPACE=$NS
 SOURCE_API=$(kubectl --context "$KUBE_CONTEXT" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 SOURCE_CR_UID=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o jsonpath='{.metadata.uid}')
@@ -237,6 +238,21 @@ SOURCE_SERVICE_RELEASE=$(SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -r '.services[str
 if [ -n "$SOURCE_SERVICE_RELEASE" ]; then
   SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i '.services[strenv(SOURCE_INSTANCE)].release = strenv(TARGET_PACKAGE_VERSION)' "$VALUES"
 fi
+```
+
+After retiring a legacy source, remove only that logical service's obsolete runtime inputs before target rendering. Do not copy them into the target's new runtime intent:
+
+```bash
+SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i '
+  del(.services[strenv(SOURCE_INSTANCE)].application,
+      .services[strenv(SOURCE_INSTANCE)].running,
+      .services[strenv(SOURCE_INSTANCE)].replicas) |
+  .deployments as $deployments |
+  del(.operations.deployments[] | select(key as $id |
+    $deployments[$id].instance == strenv(SOURCE_INSTANCE)) | .running) |
+  del(.operations.deployments[] | select(key as $id |
+    $deployments[$id].instance == strenv(SOURCE_INSTANCE)) | .replicas)
+' "$VALUES"
 ```
 
 Enter the prepared target **deployment** directory, keeping the same `VALUES`:
@@ -445,16 +461,25 @@ Verify current-generation Ready and normal client access. Record the active depl
 
 #### Interrupted cutover and a returning source
 
-After any lost acknowledgement, do not infer which generation is active from DNS or a local receipt. Re-enter each reachable deployment's approved selector and inspect the live CR UID, `spec.running`, replica intent, ingress, component Pods and native Jobs; compare its recorded API and PVC/PV identities. Inspect authoritative DNS and actual allowed/denied HTTPS paths. Keep the old source stopped and its controller at zero. If target production writes/effects cannot be excluded, treat the target as potentially authoritative: keep the source retired, close the target's ingress through `kubectl patch keycloakapplication/keycloak --type=merge -p '{"spec":{"ingress":{"enabled":false}}}'`, and resolve actual state with the responsible operator before reopening either generation. No DNS reversal, automatic fallback or restore replay resolves ambiguous writes.
+After any lost acknowledgement, do not infer which generation is active from DNS or a local receipt. Re-enter each reachable deployment's approved selector and inspect the live CR UID, `spec.running`, replica intent, ingress, component Pods and native Jobs; compare its recorded API and PVC/PV identities. Inspect authoritative DNS and actual allowed/denied HTTPS paths. Keep the old source stopped and its controller at zero. If target production writes/effects cannot be excluded, treat the target as potentially authoritative and keep the source retired. Enter `TARGET_DIR`, wait for its selector to load at the next prompt, then withdraw that target's ingress:
+
+```bash
+test "$INSTALL_DIR" = "$TARGET_DIR"
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
+  --type=merge -p '{"spec":{"ingress":{"enabled":false}}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete ingress/keycloak --timeout=5m
+```
+
+Resolve actual state with the responsible operator before reopening either generation. No DNS reversal, automatic fallback or restore replay resolves ambiguous writes.
 
 A reachable returning v1alpha2 source is re-retired through its recorded context, without starting its controller or database first:
 
 ```bash
-test "$(kubectl --context "$SOURCE_CONTEXT" config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = "$SOURCE_API"
-test "$(kubectl --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" get keycloakapplication/keycloak -o jsonpath='{.metadata.uid}')" = "$SOURCE_CR_UID"
-kubectl --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" patch keycloakapplication/keycloak \
+test "$(kubectl --kubeconfig "$SOURCE_KUBECONFIG" --context "$SOURCE_CONTEXT" config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = "$SOURCE_API"
+test "$(kubectl --kubeconfig "$SOURCE_KUBECONFIG" --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" get keycloakapplication/keycloak -o jsonpath='{.metadata.uid}')" = "$SOURCE_CR_UID"
+kubectl --kubeconfig "$SOURCE_KUBECONFIG" --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" patch keycloakapplication/keycloak \
   --type=merge -p '{"spec":{"running":false,"ingress":{"enabled":false},"backup":{"suspend":true}}}'
-kubectl --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" get pods,jobs,ingresses
+kubectl --kubeconfig "$SOURCE_KUBECONFIG" --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" get pods,jobs,ingresses
 ```
 
 Its retained whole-stop intent must already exclude component/worker execution even if the host/controller returns. If any source execution or effect is observed, isolate its production dependency credentials/access through the already approved infrastructure/dependency interfaces and stop target activation until authority is resolved. For an older source, do not restart its controller: repeat the recorded controller-then-database retirement commands and keep all restart automation excluded. Without usable source access or independently prepared enforcement, stop activation and report the missing retirement capability; this runbook does not manufacture provider-loss authority.
@@ -499,7 +524,7 @@ test "$DEPLOYMENT" = "$SOURCE_DEPLOYMENT"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" scale deployment/keycloak-controller --replicas=1
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status deployment/keycloak-controller --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak --type=merge \
-  -p '{"spec":{"running":true,"application":{"replicas":1},"ingress":{"enabled":true,"maintenance":true},"backup":{"suspend":true}}}'
+  -p "$(jq -nc --arg cidr "$ADMIN_CIDR" '{spec:{running:true,application:{replicas:1},ingress:{enabled:true,maintenance:true,administratorSourceRanges:[$cidr]},backup:{suspend:true}}}')"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
 
@@ -510,7 +535,7 @@ test "$DEPLOYMENT" = "$SOURCE_DEPLOYMENT"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" scale statefulset/keycloak-db --replicas=1
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status statefulset/keycloak-db --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak --type=merge \
-  -p '{"spec":{"application":{"replicas":1},"ingress":{"enabled":true,"maintenance":true},"backup":{"suspend":true}}}'
+  -p "$(jq -nc --arg cidr "$ADMIN_CIDR" '{spec:{application:{replicas:1},ingress:{enabled:true,maintenance:true,administratorSourceRanges:[$cidr]},backup:{suspend:true}}}')"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" scale deployment/keycloak-controller --replicas=1
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
