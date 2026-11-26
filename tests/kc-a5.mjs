@@ -10,7 +10,7 @@ const load=async name=>JSON.parse(await readFile(path.join(state,name+'.json')))
 const cfg=await load('runtime'), secrets=await load('credentials');
 const source=cfg.source||'kc-a5-source', base=cfg.base||(cfg.hostname?'https://'+cfg.hostname:'https://kc-a5.dev.fke.systems'), realm='replacement-proof';
 const run=(cmd,args,input)=>execFileSync(cmd,args,{input,encoding:'utf8',timeout:650000,maxBuffer:32*1024*1024,env:{...process.env,HELM_CACHE_HOME:path.join(state,'helm-cache')}});
-assert(cfg.sourceKubeconfig && cfg.sourceAPIServer && cfg.candidateRelease,'explicit source/target access and candidate release are required');
+assert(cfg.candidateRelease,'explicit candidate release is required');
 assert(['0.3.0','0.8.0'].includes(cfg.baselineRelease),'select the exact supported baseline fixture release');
 assert(['26.6.1','26.6.2'].includes(cfg.sourceVersion),'select the actual native source version');
 const modernBaseline=cfg.baselineRelease==='0.8.0';
@@ -83,7 +83,7 @@ async function oidc(){
 }
 async function backup(ns,label){const name='final-'+label+'-'+Date.now();k('-n',ns,'create','job',name,'--from=cronjob/keycloak-backup');await until(name,()=>json('-n',ns,'get','job',name),j=>{if(j.status?.failed)throw Error(k('-n',ns,'logs','job/'+name));return j.status?.succeeded===1});const receipt=JSON.parse(k('-n',ns,'logs','job/'+name,'-c','backup').trim());assert.match(receipt.snapshotID,/^[a-f0-9]{64}$/);await save(label+'-backup',receipt);return receipt}
 function workload(ns){const d=json('-n',ns,'get','deployment/keycloak');const pods=json('-n',ns,'get','pods').items.filter(p=>p.metadata.ownerReferences?.some(o=>o.kind==='ReplicaSet')&&!p.metadata.name.startsWith('keycloak-controller'));return{template:d.spec.template,pods:pods.map(p=>({uid:p.metadata.uid,restarts:p.status.containerStatuses?.map(c=>c.restartCount)}))}}
-function routes(){return [...json('get','ingresses','-A').items,...JSON.parse(run('kubectl',['--kubeconfig',cfg.sourceKubeconfig,'get','ingresses','-A','-o','json'])).items].filter(i=>i.spec.rules?.some(r=>r.host===new URL(base).hostname)).map(i=>i.metadata.namespace)}
+function routes(ns){return JSON.parse(run('kubectl',['--kubeconfig',configFor(ns),'get','ingresses','-A','-o','json'])).items.filter(i=>i.spec.rules?.some(r=>r.host===new URL(base).hostname)).map(i=>i.metadata.namespace)}
 // Use a genuinely separate network source for denied-access checks. A harness
 // running on the VM cannot use that same VM's curl as its denied source.
 function externalHTTP(headers=[]) {
@@ -91,7 +91,7 @@ function externalHTTP(headers=[]) {
  return (cfg.sshConfig?run('ssh',['-F',cfg.sshConfig,'-o','BatchMode=yes','k3s','curl '+args.map(a=>"'"+a.replaceAll("'","'\\''")+"'").join(' ')]):k('-n','kc-a5-probe','exec','probe','--','curl',...args)).trim();
 }
 async function reachable(){await until('public route',async()=>{try{return(await fetch(base+'/realms/master/.well-known/openid-configuration')).status}catch{return 0}},x=>x===200,120)}
-async function boundary(ns){await reachable();const discovery=await(await fetch(base+`/realms/${realm}/.well-known/openid-configuration`)).json();assert.equal(discovery.issuer,base+'/realms/'+realm);const proof=externalHTTP();assert.equal(proof,'403');const forged=externalHTTP(['-H','X-Forwarded-For: '+cfg.adminIPv4,'-H','X-Real-IP: '+cfg.adminIPv4,'-H','Forwarded: for='+cfg.adminIPv4+';proto=https']);assert.equal(forged,'403');assert.deepEqual(routes(),[ns]);return{allowed:200,denied:proof,forged,issuer:discovery.issuer,routes:routes()}}
+async function boundary(ns){await reachable();const discovery=await(await fetch(base+`/realms/${realm}/.well-known/openid-configuration`)).json();assert.equal(discovery.issuer,base+'/realms/'+realm);const proof=externalHTTP();assert.equal(proof,'403');const forged=externalHTTP(['-H','X-Forwarded-For: '+cfg.adminIPv4,'-H','X-Real-IP: '+cfg.adminIPv4,'-H','Forwarded: for='+cfg.adminIPv4+';proto=https']);assert.equal(forged,'403');assert.deepEqual(routes(ns),[ns]);return{allowed:200,denied:proof,forged,issuer:discovery.issuer,routes:routes(ns)}}
 async function retireSource(){
  intent(source,{'application.replicas':0,'ingress.enabled':false,'backup.suspend':true});await zero(source);
  k('-n',source,'scale','deployment/keycloak-controller','--replicas=0');
@@ -99,6 +99,8 @@ async function retireSource(){
  k('-n',source,'scale','statefulset/keycloak-db','--replicas=0');
  k('-n',source,'wait','pod/keycloak-db-0','--for=delete','--timeout=120s');
  assert(!json('-n',source,'get','pods').items.some(p=>p.status?.phase==='Running'));
+ assert.deepEqual(routes(source),[]);
+ await save('source-retirement',{applicationUID:app(source).metadata.uid,confirmed:true});
 }
 async function sourceScenario(){
  await install(source,{backup:true});await reachable();
@@ -126,7 +128,7 @@ async function fallbackScenario(){
 }
 async function replacementUpgradeScenario(){
  const ns='kc-a5-upgraded-replacement',final=await load('source-backup'),fixture=await load('fixture');
- assert.equal(json('-n',source,'get','pods').items.length,0,'source must remain unavailable');
+ assert.equal((await load('source-retirement')).confirmed,true,'operator source retirement must precede reconstruction; this scenario never contacts the predecessor');
  await install(ns,{backup:true,route:false,chart:cfg.candidateChart});const a=await ready(ns);
  assert.equal(a.status.operation.snapshot.id,final.snapshotID);assert.equal(sql(ns,'SELECT version FROM migration_model ORDER BY update_time DESC LIMIT 1'),'26.6.2');
  assert.equal(Object.hasOwn(a.spec,'recoveryAdminSecret'),false);assert(!json('-n',ns,'get','secrets').items.some(s=>s.metadata.name==='keycloak-recovery'));
@@ -200,5 +202,5 @@ async function openCandidateScenario(){
 }
 const scenarios={source:sourceScenario,fallback:fallbackScenario,'replacement-upgrade':replacementUpgradeScenario,interruption:interruptionScenario,bypass:bypassScenario,downgrade:downgradeScenario,open:openCandidateScenario};
 const scenario=process.argv[2];assert(scenarios[scenario],'unknown scenario');const actual=JSON.parse(run('kubectl',['--kubeconfig',cfg.kubeconfig,'config','view','--minify','-o','json'])).clusters[0].cluster.server;assert.equal(actual,cfg.apiServer);
-const sourceActual=JSON.parse(run('kubectl',['--kubeconfig',cfg.sourceKubeconfig,'config','view','--minify','-o','json'])).clusters[0].cluster.server;assert.equal(sourceActual,cfg.sourceAPIServer);assert.notEqual(actual,sourceActual,'v1alpha1 source requires an independent target cluster');
+if(scenario==='source'||scenario==='fallback'){assert(cfg.sourceKubeconfig&&cfg.sourceAPIServer,'source operations require explicit source access');const sourceActual=JSON.parse(run('kubectl',['--kubeconfig',cfg.sourceKubeconfig,'config','view','--minify','-o','json'])).clusters[0].cluster.server;assert.equal(sourceActual,cfg.sourceAPIServer);assert.notEqual(actual,sourceActual,'v1alpha1 source requires an independent target cluster')}
 try{const result=await scenarios[scenario]();await save(scenario+'-result',{time:new Date().toISOString(),scenario,status:'passed',result});console.log(JSON.stringify({scenario,status:'passed',result}))}catch(error){await save(scenario+'-failure',{time:new Date().toISOString(),message:error.message});throw error}
