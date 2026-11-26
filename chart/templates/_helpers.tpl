@@ -1,8 +1,8 @@
 {{- define "keycloak.controllerImage" -}}
-ghcr.io/bartlapp/bartl-keycloak-controller@sha256:9afdfc59526deeeb5b0af5b73960c4505385b49ffd7038aaf6f780a6507170ad
+ghcr.io/bartlapp/bartl-keycloak-controller@sha256:a2979d6d645cab1304f6abc84752e9f7c0471132a9b6c2c613216412c4c01213
 {{- end -}}
 {{- define "keycloak.backupImage" -}}
-ghcr.io/bartlapp/bartl-keycloak-backup@sha256:c770a00be0eb661c4c10eefe5dbebe9ab755f7a2650398cd9172d9aa6f4897d7
+ghcr.io/bartlapp/bartl-keycloak-backup@sha256:502cb861b5681d38c9ff6570913a1853cc99d5dab5f77c5b2c5d98754620ca7b
 {{- end -}}
 {{- define "keycloak.labels" -}}
 app.kubernetes.io/name: bartl-keycloak
