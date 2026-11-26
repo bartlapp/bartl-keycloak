@@ -12,7 +12,7 @@ const secrets = JSON.parse(await readFile(path.join(state, 'credentials.json')))
 const ca = await readFile(path.join(state, 'repository.crt'), 'utf8');
 // Source fixture uses this exact candidate API; historical migrations live in A5.
 const sourceValues = JSON.parse(await readFile(path.join(state, 'source-values.json')));
-const source = 'kc-a4-source';
+const source = cfg.source || 'kc-a4-source';
 const base = sourceValues.configuration.hostname;
 const realm = 'recovery-proof';
 const repository = cfg.repository || 'rest:https://backup-store.kc-a4-repository.svc/keycloak/';
@@ -526,7 +526,21 @@ async function ordinaryScenario() {
     let failure;try{k('-n',source,'patch','keycloakapplication/keycloak','--type=merge','-p',JSON.stringify({spec:{application:{replicas:value}}}))}catch(e){failure=e}
     assert(failure,'invalid replica intent accepted');assert.equal(app(source).metadata.generation,generation);
   }
-  return {replicas:2,nativeScale:true,ordinaryRestartPreservedIdentity:true,samePodRestart:true,ordinaryRefreshPreserved:true,wholeApplicationStop:true,runtimeIntentSurvivedStaticApplyAndControllerRestart:true,stoppedComponentRestartsDidNotWake:true,independentDatabaseRestart:true,keycloakZeroCapture:captured.snapshotID,failedObservationDidNotInitialize:true,invalidReplicaIntentsRejected:true};
+  const role=json('-n',source,'get','role/keycloak-controller');
+  const observedPods=json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.map(p=>p.metadata.uid).sort();
+  const unavailableRules=structuredClone(role.rules);
+  for(const rule of unavailableRules)if(rule.resources?.includes('secrets'))rule.resourceNames=rule.resourceNames.filter(name=>name!=='keycloak-database');
+  try {
+    k('-n',source,'patch','role/keycloak-controller','--type=merge','-p',JSON.stringify({rules:unavailableRules}));
+    await until('credential observation unavailable',()=>app(source),a=>condition(a,'Degraded')&&a.status.state.reason==='ObservationUnavailable');
+    assert.equal(json('-n',source,'get','deployment/keycloak').spec.replicas,1);
+    assert.deepEqual(json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.map(p=>p.metadata.uid).sort(),observedPods);
+    assert.equal(app(source).spec.running,true);await oidc();
+  } finally {
+    k('-n',source,'patch','role/keycloak-controller','--type=merge','-p',JSON.stringify({rules:role.rules}));
+  }
+  await ready(source);
+  return {replicas:2,nativeScale:true,ordinaryRestartPreservedIdentity:true,samePodRestart:true,ordinaryRefreshPreserved:true,wholeApplicationStop:true,runtimeIntentSurvivedStaticApplyAndControllerRestart:true,stoppedComponentRestartsDidNotWake:true,independentDatabaseRestart:true,keycloakZeroCapture:captured.snapshotID,failedObservationDidNotInitialize:true,continuedOperationDuringObservationLoss:true,invalidReplicaIntentsRejected:true};
 }
 
 async function conflictScenario() {
@@ -552,7 +566,7 @@ async function conflictScenario() {
 }
 
 async function initialStoppedScenario(){
-  const ns='kc-a4-initial-stopped';
+  const ns=source+'-initial-stopped';
   await install(ns,{backup:false,running:false,replicas:2,identity:'kc-a4-initial'});
   await stopped(ns);
   const assertNoExecution=()=>{

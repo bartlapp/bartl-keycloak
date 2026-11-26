@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"reflect"
 	"time"
@@ -91,6 +92,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		}
 		return r.report(ctx, a, class, reason, message, false, false, false, true)
 	}
+	refuse := func(reason string, err error) (ctrl.Result, error) {
+		if apiUnavailable(err) {
+			established := exists && dep.Annotations[initializationAnnotation] == "false"
+			return r.report(ctx, a, "Unknown", "ObservationUnavailable", "Management API observation or reconciliation is unavailable; existing execution retains its running authority: "+err.Error(), established && a.Spec.Application.Replicas > 0, false, false, true)
+		}
+		return fail("Unknown", reason, err.Error())
+	}
 	if err := validate(a); err != nil {
 		return fail("Unknown", "UnsupportedConfiguration", err.Error())
 	}
@@ -101,21 +109,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	}
 	pvc, err := r.storage(ctx, a)
 	if err != nil {
-		return fail("Unknown", "StorageRefused", err.Error())
+		return refuse("StorageRefused", err)
 	}
 	binding := fmt.Sprintf("bartl-keycloak:%s:%s:%s:%s", a.Spec.Identity.Installation, a.Spec.Identity.Instance, a.UID, pvc.UID)
 	if exists && dep.Annotations[bindingAnnotation] != binding {
 		return fail("Unknown", "TargetBindingMismatch", "Existing application execution is bound to another native target")
 	}
 	if err := r.policies(ctx, a); err != nil {
-		return fail("Unknown", "IsolationRefused", err.Error())
+		return refuse("IsolationRefused", err)
 	}
 	if err := r.database(ctx, a); err != nil {
-		return fail("Unknown", "DatabaseWorkloadRefused", err.Error())
+		return refuse("DatabaseWorkloadRefused", err)
 	}
 	app, err := r.credentials(ctx, a.Namespace, a.Spec.Database.SecretName, true)
 	if err != nil {
-		return fail("Unknown", "DatabaseCredentialsUnavailable", err.Error())
+		return refuse("DatabaseCredentialsUnavailable", err)
 	}
 	databaseBinding := app.Database + "\n" + app.Username
 	const databaseAnnotation = "keycloak.bartl.sh/database"
@@ -150,10 +158,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			return result, nil
 		}
 		if err := r.application(ctx, a, binding, false, false); err != nil {
-			return fail("Unknown", "ApplicationWorkloadRefused", err.Error())
+			return refuse("ApplicationWorkloadRefused", err)
 		}
 		if err := r.routing(ctx, a); err != nil {
-			return fail("Unknown", "RoutingRefused", err.Error())
+			return refuse("RoutingRefused", err)
 		}
 		return r.report(ctx, a, "Valid", "NativeStartupAvailable", "Established application workload reconciled", a.Spec.Application.Replicas > 0, a.Spec.Application.Replicas == 0, false, false)
 	}
@@ -212,7 +220,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	}
 	if a.Spec.Application.Replicas == 0 {
 		if err := r.routing(ctx, a); err != nil {
-			return fail("Unknown", "RoutingRefused", err.Error())
+			return refuse("RoutingRefused", err)
 		}
 		quiescent := observation.Classification == "Valid" || observation.Classification == "Absent"
 		return r.report(ctx, a, observation.Classification, observation.Reason, "Serving replicas are zero; PostgreSQL remains available", false, true, false, !quiescent)
@@ -296,15 +304,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	}
 	if exclusive {
 		if err := r.removeIngress(ctx, a); err != nil {
-			return fail("Unknown", "RoutingRefused", err.Error())
+			return refuse("RoutingRefused", err)
 		}
 	} else {
 		if err := r.routing(ctx, a); err != nil {
-			return fail("Unknown", "RoutingRefused", err.Error())
+			return refuse("RoutingRefused", err)
 		}
 	}
 	if err := r.application(ctx, a, binding, initial, exclusive); err != nil {
-		return fail("Unknown", "ApplicationWorkloadRefused", err.Error())
+		return refuse("ApplicationWorkloadRefused", err)
 	}
 	if exclusive {
 		return r.report(ctx, a, observation.Classification, "Initializing", "One exclusive native Keycloak startup is admitted", false, false, true, false)
@@ -314,6 +322,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	}
 	return r.report(ctx, a, "Valid", "NativeStartupAvailable", "Native startup and application readiness observed", true, false, false, false)
 }
+
+// An unavailable management API blocks reconciliation, not already granted
+// execution. Confirmed invalid configuration and native-state failures still
+// follow their refusal boundaries; in particular NotFound is not absence proof.
+func apiUnavailable(err error) bool {
+	var networkError net.Error
+	var requestError *url.Error
+	return apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) ||
+		apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) ||
+		apierrors.IsServiceUnavailable(err) || apierrors.IsTooManyRequests(err) ||
+		apierrors.IsInternalError(err) || errors.As(err, &networkError) ||
+		errors.As(err, &requestError) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
+}
+
 func validate(a *api.KeycloakApplication) error {
 	if a.Name != "keycloak" || a.Spec.Identity.Installation == "" || a.Spec.Identity.Instance == "" || a.Spec.PackageRelease == "" || a.Spec.Application.Replicas < 0 {
 		return errors.New("invalid identity, release or replica intent")
@@ -345,7 +368,7 @@ func (r *Reconciler) credentials(ctx context.Context, ns, name string, database 
 	}
 	var s corev1.Secret
 	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &s); err != nil {
-		return c, errors.New("referenced Secret is unavailable")
+		return c, fmt.Errorf("referenced Secret is unavailable: %w", err)
 	}
 	c.Username = string(s.Data["username"])
 	c.Password = string(s.Data["password"])

@@ -534,6 +534,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" logs deployment/keycloak -c keycloak 
 
 Check `status.operation`, current-generation conditions and Job logs (`-c recovery` or `-c backup`). `status.observedGeneration` means examined, not achieved; the condition must be true for the current `metadata.generation`. `Ready` covers intended running/access, `Stopped` confirms the complete owned application has stopped, and `Quiescent` describes the native-work boundary. Keycloak-only zero replicas must not be reported as whole-application Stopped.
 
+`ObservationUnavailable` reports a management API authorization, transport or availability failure. Already admitted execution retains its running authority; dependent reconciliation waits for access to recover. Restore that access and check useful service behavior. A confirmed invalid configuration or failed native transition is a different failure boundary, and an unobserved stop remains unconfirmed.
+
 A client timeout does not cancel work. Failed transitions remain isolated across restarts; do not clear failed-state markers or roll software back to force progress. Keep diagnostics and verified inputs, then recover on independent empty storage.
 
 For pending certificates check DNS, port 80 and cert-manager events. For maintenance denying an administrator, check the ingress client address, not a wider allowlist. For an unwritable Helm cache, set `HELM_CACHE_HOME="$INSTALL_DIR/helm-cache"`. For image acquisition failures, check the pinned digest and registry access.
