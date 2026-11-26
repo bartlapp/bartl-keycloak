@@ -2,7 +2,7 @@
 
 Keycloak over HTTPS with its own PostgreSQL database. The package initializes empty state, reconstructs from a configured backup and performs supported native migrations.
 
-This checkout documents the **live-qualified `0.9.0-dev.6` v1alpha2 candidate**, not a stable release. Stable [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0) retains its release-specific API and instructions. Use the exact supplied candidate archive and these procedures together; do not apply them to 0.8.0. [DESIGN](DESIGN.md#package-and-qualification-scope) records the exercised profile, artifact identities and material limits. Publication remains separately authorized work.
+This checkout contains **v1alpha2 corrections awaiting exact-candidate qualification**, not a stable release. The preceding `0.9.0-dev.6` candidate has retained live evidence but did not receive full acceptance against the application contract. Its artifacts do not contain these corrections. Stable [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0) retains its release-specific API and instructions. Use an exact supplied candidate archive with its matching procedures; do not apply these instructions to 0.8.0. [DESIGN](DESIGN.md#package-and-qualification-scope) records historical artifact identities, observed results and outstanding qualification. Publication remains separately authorized work.
 
 - [Prerequisites](#prerequisites)
 - [Install a new deployment](#install-a-new-deployment)
@@ -550,6 +550,8 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" logs deployment/keycloak -c keycloak 
 Check `status.operation`, current-generation conditions and Job logs (`-c recovery` or `-c backup`). `status.observedGeneration` means examined, not achieved; the condition must be true for the current `metadata.generation`. `Ready` covers intended running/access, `Stopped` confirms the complete owned application has stopped, and `Quiescent` describes the native-work boundary. Keycloak-only zero replicas must not be reported as whole-application Stopped.
 
 `ObservationUnavailable` reports a management API authorization, transport or availability failure. Already admitted execution retains its running authority; dependent reconciliation waits for access to recover. `Ready=False` means current reconciliation is unconfirmed, not that the running service was withdrawn. Restore that access and check useful service behavior. A confirmed invalid configuration or failed native transition is a different failure boundary, and an unobserved stop remains unconfirmed.
+
+`BackupConfigurationRefused` means backup resources could not be created, updated or removed. `Ready=False` and `Degraded=True` report the unapplied configuration without stopping an otherwise healthy application. Inspect the reported cause and `kubectl --context "$KUBE_CONTEXT" -n "$NS" get cronjob/keycloak-backup -o yaml`; a failed update or removal can leave the previous schedule active. Correct the cause, then verify the actual schedule and current-generation readiness. This is not a backup publication failure: publication status belongs to the backup Job and its receipt. A simultaneous native failure retains its own refusal reason and stop boundary.
 
 A client timeout does not cancel work. Failed transitions remain isolated across restarts; do not clear failed-state markers or roll software back to force progress. Keep diagnostics and verified inputs, then recover on independent empty storage.
 

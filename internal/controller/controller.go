@@ -57,7 +57,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		return ctrl.Result{}, nil
 	}
 	previous := a.DeepCopyObject().(*api.KeycloakApplication)
+	var backupErr error
 	defer func() {
+		if backupErr != nil {
+			// Backup resource management is not capture publication. Continue
+			// native/routing reconciliation, but never certify unapplied inputs.
+			reason := "BackupConfigurationRefused"
+			message := "Backup configuration could not be reconciled; existing execution is not withdrawn: " + backupErr.Error()
+			if condition := meta.FindStatusCondition(a.Status.Conditions, "Degraded"); condition != nil && condition.ObservedGeneration == a.Generation && condition.Status == metav1.ConditionTrue {
+				reason, message = condition.Reason, condition.Message
+			}
+			if len(message) > 700 {
+				message = message[:700]
+			}
+			meta.SetStatusCondition(&a.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: a.Generation, Reason: reason, Message: message})
+			meta.SetStatusCondition(&a.Status.Conditions, metav1.Condition{Type: "Degraded", Status: metav1.ConditionTrue, ObservedGeneration: a.Generation, Reason: reason, Message: message})
+		}
 		if !reflect.DeepEqual(previous.Status, a.Status) {
 			reconcileErr = errors.Join(reconcileErr, r.Status().Update(ctx, a))
 		}
@@ -102,9 +117,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		return fail("Unknown", "UnsupportedConfiguration", err.Error())
 	}
 	if a.Spec.Backup == nil {
-		if err := r.removeBackup(ctx, a); err != nil {
-			ctrl.LoggerFrom(ctx).Error(err, "Backup schedule removal refused")
-		}
+		backupErr = r.removeBackup(ctx, a)
 	}
 	pvc, err := r.storage(ctx, a)
 	if err != nil {
@@ -137,10 +150,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		}
 	}
 	if a.Spec.Backup != nil {
-		if err := r.backup(ctx, a, pvc, binding); err != nil {
-			// Backup configuration and repository access never revoke local service.
-			ctrl.LoggerFrom(ctx).Error(err, "Backup schedule reconciliation refused")
-		}
+		// Backup configuration and repository access never revoke local service.
+		backupErr = r.backup(ctx, a, pvc, binding)
 	}
 	if reason := pvc.Annotations[startupFailureAnnotation]; reason != "" {
 		return fail("Incomplete", "StartupInterrupted", reason+"; discard the failed target before retry")

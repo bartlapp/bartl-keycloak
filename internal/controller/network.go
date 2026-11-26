@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 
@@ -86,7 +87,7 @@ func (r *Reconciler) routing(ctx context.Context, a *api.KeycloakApplication) er
 		err := r.Reader.Get(ctx, key, middleware)
 		absent := apierrors.IsNotFound(err)
 		if err != nil && !absent {
-			return errors.New("maintenance requires the installed Traefik Middleware CRD and reader permission")
+			return fmt.Errorf("maintenance requires the installed Traefik Middleware CRD and reader permission: %w", err)
 		}
 		if absent {
 			middleware.SetNamespace(a.Namespace)
