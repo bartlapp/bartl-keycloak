@@ -410,6 +410,7 @@ For enabled serving intent, require current-generation Ready and useful behavior
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout restart deployment/keycloak
 kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status deployment/keycloak --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o json | \
   jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
     any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
