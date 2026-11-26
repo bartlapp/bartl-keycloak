@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha2"
 	"github.com/floriankesslergmbh/bartl-keycloak/internal/controller"
 	"github.com/floriankesslergmbh/bartl-keycloak/internal/native"
 	"k8s.io/apimachinery/pkg/runtime"

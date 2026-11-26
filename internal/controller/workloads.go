@@ -6,8 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha1"
-	"github.com/floriankesslergmbh/bartl-keycloak/internal/native"
+	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,10 +34,14 @@ func (r *Reconciler) storage(ctx context.Context, a *api.KeycloakApplication) (*
 	pvc := &corev1.PersistentVolumeClaim{}
 	key := types.NamespacedName{Namespace: a.Namespace, Name: "keycloak-db"}
 	binding := a.Spec.Identity.Installation + ":" + a.Spec.Identity.Instance + ":" + a.Spec.Database.SecretName + ":" + a.Spec.Database.AdminSecretName
+	packageBinding := a.Spec.PackageRelease + "\n" + r.KeycloakImage + "\n" + r.PostgresImage + "\n" + r.ControllerImage + "\n" + r.BackupImage
 	err = r.Get(ctx, key, pvc)
 	if err == nil {
 		if pvc.Labels[ownerLabel] != string(a.UID) || pvc.Annotations[bindingAnnotation] != binding {
 			return nil, errors.New("retained PVC identity/credential binding differs; automatic adoption is forbidden")
+		}
+		if pvc.Annotations["keycloak.bartl.sh/package"] != packageBinding {
+			return nil, errors.New("in-place package changes are not supported; replace on independent target storage")
 		}
 		requested := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
 		if requested.Cmp(size) != 0 {
@@ -51,8 +54,11 @@ func (r *Reconciler) storage(ctx context.Context, a *api.KeycloakApplication) (*
 	}
 	pvc = &corev1.PersistentVolumeClaim{ObjectMeta: metadata(a, "keycloak-db"), Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: size}}}}
 	pvc.Labels = labels(a, "keycloak-db")
-	pvc.Annotations = map[string]string{bindingAnnotation: binding}
+	pvc.Annotations = map[string]string{bindingAnnotation: binding, "keycloak.bartl.sh/package": packageBinding}
 	// Deliberately no owner reference: uninstall and CR deletion must not garbage-collect the data.
+	if err := r.authority(ctx, a); err != nil {
+		return nil, err
+	}
 	if err = r.Create(ctx, pvc); err != nil {
 		return nil, err
 	}
@@ -103,20 +109,17 @@ fi
 exec /usr/local/bin/docker-entrypoint.sh postgres
 `
 
-func (r *Reconciler) application(ctx context.Context, a *api.KeycloakApplication, binding string, initial, exclusive, upgrading bool) error {
+func (r *Reconciler) application(ctx context.Context, a *api.KeycloakApplication, binding string, initial, exclusive bool) error {
 	if err := r.service(ctx, a, "keycloak", []corev1.ServicePort{{Name: "http", Port: 8080, TargetPort: intstr.FromInt32(8080)}}); err != nil {
 		return err
 	}
 	d := &appsv1.Deployment{ObjectMeta: metadata(a, "keycloak")}
 	return r.apply(ctx, a, d, func() error {
-		if len(d.Spec.Template.Spec.Containers) > 0 && d.Spec.Template.Spec.Containers[0].Image != r.KeycloakImage && (!upgrading || d.Spec.Template.Spec.Containers[0].Image != native.UpgradeSourceImage || r.KeycloakImage != native.KeycloakImage) {
-			return errors.New("Keycloak image transition is outside the supported native pair")
+		if len(d.Spec.Template.Spec.Containers) > 0 && d.Spec.Template.Spec.Containers[0].Image != r.KeycloakImage {
+			return errors.New("in-place Keycloak image transitions are not supported; replace on independent target storage")
 		}
 		d.Labels = labels(a, "keycloak")
 		d.Annotations = map[string]string{bindingAnnotation: binding, initializationAnnotation: fmt.Sprint(exclusive)}
-		if upgrading {
-			d.Annotations[upgradeAnnotation] = upgradePair
-		}
 		var recovery recoveryOperation
 		count := a.Spec.Application.Replicas
 		if exclusive {
@@ -131,9 +134,6 @@ func (r *Reconciler) application(ctx context.Context, a *api.KeycloakApplication
 		}
 		// Preserve kubectl.kubernetes.io/restartedAt (and other administrator annotations).
 		env := []corev1.EnvVar{{Name: "KC_DB", Value: "postgres"}, {Name: "KC_DB_URL", Value: "jdbc:postgresql://keycloak-db:5432/$(BARTL_DATABASE)"}, secretEnv("KC_DB_USERNAME", a.Spec.Database.SecretName, "username", false), secretEnv("KC_DB_PASSWORD", a.Spec.Database.SecretName, "password", false), secretEnv("BARTL_DATABASE", a.Spec.Database.SecretName, "database", false), {Name: "BARTL_DATABASE_HOST", Value: "keycloak-db." + a.Namespace + ".svc"}, {Name: "BARTL_DATABASE_BINDING", Value: binding}, {Name: "BARTL_ALLOW_EMPTY", Value: fmt.Sprint(initial)}, {Name: "KC_HOSTNAME", Value: a.Spec.Configuration.Hostname}, {Name: "KC_HTTP_ENABLED", Value: "true"}, {Name: "KC_PROXY_HEADERS", Value: "xforwarded"}, {Name: "KC_HEALTH_ENABLED", Value: "true"}, {Name: "KC_METRICS_ENABLED", Value: "true"}, {Name: "KC_CACHE", Value: "ispn"}, {Name: "KC_CACHE_STACK", Value: "jdbc-ping"}, {Name: "KC_SHUTDOWN_DELAY", Value: "5s"}, {Name: "JAVA_OPTS_APPEND", Value: "-XX:MaxRAMPercentage=70.0"}}
-		if upgrading {
-			env = append(env, corev1.EnvVar{Name: "BARTL_ALLOW_UPGRADE", Value: "true"})
-		}
 		// Kubernetes env substitution is order-dependent.
 		env[1], env[4] = env[4], env[1]
 		pvc := &corev1.PersistentVolumeClaim{}

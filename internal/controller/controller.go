@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"time"
 
-	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha2"
 	"github.com/floriankesslergmbh/bartl-keycloak/internal/native"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -70,6 +70,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	exists := err == nil
 	if exists && !owned(dep, a) {
 		return r.report(ctx, a, "Unknown", "OwnershipCollision", "Deployment keycloak is not owned by this application", false, false, false, true)
+	}
+	if !a.Spec.Running {
+		return r.stop(ctx, a, dep, exists)
 	}
 	// Stop wins even over malformed/unsupported new inputs and missing credentials.
 	if a.Spec.Application.Replicas == 0 && exists {
@@ -132,6 +135,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			ctrl.LoggerFrom(ctx).Error(err, "Backup schedule reconciliation refused")
 		}
 	}
+	if reason := pvc.Annotations[startupFailureAnnotation]; reason != "" {
+		return fail("Incomplete", "StartupInterrupted", reason+"; discard the failed target before retry")
+	}
 	// Established reconciliation owns desired resources and readiness, not the
 	// database schema. Observer outages cannot terminate healthy Keycloak.
 	if pvc.Annotations[establishedAnnotation] == r.KeycloakImage && exists &&
@@ -143,16 +149,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		if latest.Generation != a.Generation {
 			return result, nil
 		}
-		if err := r.application(ctx, a, binding, false, false, false); err != nil {
+		if err := r.application(ctx, a, binding, false, false); err != nil {
 			return fail("Unknown", "ApplicationWorkloadRefused", err.Error())
 		}
 		if err := r.routing(ctx, a); err != nil {
 			return fail("Unknown", "RoutingRefused", err.Error())
 		}
 		return r.report(ctx, a, "Valid", "NativeStartupAvailable", "Established application workload reconciled", a.Spec.Application.Replicas > 0, a.Spec.Application.Replicas == 0, false, false)
-	}
-	if reason := pvc.Annotations[startupFailureAnnotation]; reason != "" {
-		return fail("Incomplete", "StartupInterrupted", reason+"; discard the failed target before retry")
 	}
 	host := "keycloak-db." + a.Namespace + ".svc"
 	dbctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -207,15 +210,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	if handled, recoveryResult, recoveryErr := r.recovery(ctx, a, pvc, binding, conn, observation, dep, exists); handled {
 		return recoveryResult, recoveryErr
 	}
-	if handled, upgradeResult, upgradeErr := r.upgrade(ctx, a, pvc, binding, conn, observation, dep, exists); handled {
-		return upgradeResult, upgradeErr
-	}
 	if a.Spec.Application.Replicas == 0 {
 		if err := r.routing(ctx, a); err != nil {
 			return fail("Unknown", "RoutingRefused", err.Error())
 		}
 		quiescent := observation.Classification == "Valid" || observation.Classification == "Absent"
-		return r.report(ctx, a, observation.Classification, observation.Reason, "Persistent stop requested; PostgreSQL remains available", false, true, false, !quiescent)
+		return r.report(ctx, a, observation.Classification, observation.Reason, "Serving replicas are zero; PostgreSQL remains available", false, true, false, !quiescent)
 	}
 	if observation.Classification == "Unverified" {
 		if !exists || dep.Annotations[initializationAnnotation] != "true" {
@@ -233,6 +233,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 		}
 		if dep.Status.ObservedGeneration != dep.Generation || dep.Status.ReadyReplicas != 1 {
 			return r.report(ctx, a, "Unverified", observation.Reason, "Waiting for exclusive native startup readiness", false, false, true, false)
+		}
+		if err := r.authority(ctx, a); err != nil {
+			return result, err
 		}
 		if err := native.CompleteInitialization(dbctx, conn, binding); err != nil {
 			return fail("Unknown", "NativeVerificationFailed", err.Error())
@@ -288,7 +291,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), latest); err != nil {
 		return result, err
 	}
-	if latest.Generation != a.Generation || latest.Spec.Application.Replicas == 0 {
+	if latest.Generation != a.Generation || !latest.Spec.Running || latest.Spec.Application.Replicas == 0 {
 		return result, nil
 	}
 	if exclusive {
@@ -300,7 +303,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			return fail("Unknown", "RoutingRefused", err.Error())
 		}
 	}
-	if err := r.application(ctx, a, binding, initial, exclusive, false); err != nil {
+	if err := r.application(ctx, a, binding, initial, exclusive); err != nil {
 		return fail("Unknown", "ApplicationWorkloadRefused", err.Error())
 	}
 	if exclusive {
@@ -364,6 +367,9 @@ func (r *Reconciler) scale(ctx context.Context, d *appsv1.Deployment, n int32) e
 	return r.Patch(ctx, d, client.MergeFrom(before))
 }
 func (r *Reconciler) apply(ctx context.Context, a *api.KeycloakApplication, o client.Object, mutate func() error) error {
+	if err := r.authority(ctx, a); err != nil {
+		return err
+	}
 	err := r.Reader.Get(ctx, client.ObjectKeyFromObject(o), o)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
@@ -397,6 +403,9 @@ func (r *Reconciler) apply(ctx context.Context, a *api.KeycloakApplication, o cl
 	unstructured.RemoveNestedField(desired, "spec", "template", "metadata", "annotations")
 	payload, err := json.Marshal(desired)
 	if err != nil {
+		return err
+	}
+	if err := r.authority(ctx, a); err != nil {
 		return err
 	}
 	return r.Patch(ctx, o, client.RawPatch(types.ApplyPatchType, payload), client.FieldOwner("bartl-keycloak"), client.ForceOwnership)
@@ -474,7 +483,14 @@ func (r *Reconciler) report(ctx context.Context, a *api.KeycloakApplication, cla
 	} else {
 		ready = false
 	}
-	stopped := a.Spec.Application.Replicas == 0 && active == 0 && !collision
+	stopped := !a.Spec.Running && active == 0 && !collision && (apierrors.IsNotFound(lookupErr) || dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0)
+	if stopped {
+		drained, err := r.stoppedComponents(ctx, a)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		stopped = drained
+	}
 	quiescent := !progress && (class == "Valid" || class == "Absent") && (a.Status.Operation == nil || a.Status.Operation.Result == "Complete")
 	// Job state reports outstanding work; native locks still enforce exclusion.
 	// Manual Jobs also carry the controller's labels on their Pod template.
@@ -501,7 +517,9 @@ func (r *Reconciler) report(ctx context.Context, a *api.KeycloakApplication, cla
 	a.Status.PackageRelease = a.Spec.PackageRelease
 	a.Status.State = api.State{Classification: class, Reason: reason}
 	a.Status.Application = api.ApplicationStatus{DesiredReplicas: a.Spec.Application.Replicas, ReadyReplicas: replicas, ActivePods: active}
-	values := map[string]bool{"Ready": ready, "Stopped": stopped, "Quiescent": quiescent, "Progressing": progress || (!degraded && !ready && !stop), "Degraded": degraded}
+	a.Status.Replicas = dep.Status.Replicas
+	a.Status.Selector = fmt.Sprintf("app.kubernetes.io/name=keycloak,%s=%s", ownerLabel, a.UID)
+	values := map[string]bool{"Ready": ready && a.Spec.Running, "Stopped": stopped, "Quiescent": quiescent, "Progressing": progress || (!a.Spec.Running && !stopped) || (!degraded && !ready && !stop), "Degraded": degraded}
 	if len(message) > 700 {
 		message = message[:700]
 	}

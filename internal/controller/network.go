@@ -6,7 +6,7 @@ import (
 	"net"
 	"net/url"
 
-	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha2"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -64,7 +64,7 @@ func (r *Reconciler) policies(ctx context.Context, a *api.KeycloakApplication) e
 	})
 }
 func (r *Reconciler) routing(ctx context.Context, a *api.KeycloakApplication) error {
-	if !a.Spec.Ingress.Enabled {
+	if !a.Spec.Running || !a.Spec.Ingress.Enabled {
 		return r.removeIngress(ctx, a)
 	}
 	annotations := map[string]string{}

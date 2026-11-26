@@ -3,7 +3,7 @@ kind: CustomResourceDefinition
 metadata:
   name: keycloakapplications.keycloak.bartl.sh
   annotations:
-    keycloak.bartl.sh/crd-revision: "3"
+    keycloak.bartl.sh/crd-revision: "4"
 spec:
   group: keycloak.bartl.sh
   scope: Namespaced
@@ -13,11 +13,15 @@ spec:
     kind: KeycloakApplication
     shortNames: [kca]
   versions:
-    - name: v1alpha1
+    - name: v1alpha2
       served: true
       storage: true
       subresources:
         status: {}
+        scale:
+          specReplicasPath: .spec.application.replicas
+          statusReplicasPath: .status.replicas
+          labelSelectorPath: .status.selector
       additionalPrinterColumns:
         - name: Ready
           type: string
@@ -47,8 +51,11 @@ spec:
               type: object
             spec:
               type: object
-              required: [identity, packageRelease, application, configuration, database, ingress]
+              required: [identity, packageRelease, configuration, database, ingress]
               properties:
+                running:
+                  type: boolean
+                  default: true
                 identity:
                   type: object
                   x-kubernetes-map-type: atomic
@@ -73,12 +80,13 @@ spec:
                   maxLength: 128
                 application:
                   type: object
-                  required: [replicas]
+                  default: {}
                   properties:
                     replicas:
                       type: integer
                       format: int32
                       minimum: 0
+                      default: 1
                 configuration:
                   type: object
                   required: [hostname]
@@ -181,6 +189,12 @@ spec:
             status:
               type: object
               properties:
+                replicas:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                selector:
+                  type: string
                 observedGeneration:
                   type: integer
                   format: int64

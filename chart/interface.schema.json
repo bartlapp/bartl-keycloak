@@ -18,7 +18,6 @@
     "intent": {
       "type": "object", "additionalProperties": true,
       "properties": {
-        "replicas": {"type": "integer", "minimum": 0, "maximum": 2147483647},
         "ingressEnabled": {"type": "boolean"},
         "maintenance": {"type": "boolean"},
         "backupSuspend": {"type": "boolean"}
@@ -37,7 +36,6 @@
         },
         "hostname": {"type": "string", "minLength": 1, "maxLength": 245, "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"},
         "realm": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
-        "application": {"type": "object", "additionalProperties": false, "properties": {"replicas": {"type": "integer", "minimum": 0, "maximum": 2147483647}}},
         "database": {
           "type": "object", "additionalProperties": false,
           "properties": {

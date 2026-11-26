@@ -4,9 +4,9 @@ The [README](README.md) and linked [recovery runbook](RECOVERY.md) own operation
 
 ## Package and qualification scope
 
-Current stable release: `0.8.0`, Keycloak 26.6.2, PostgreSQL 17.6, Restic 0.19.1 and CRD revision 3. It removes the recovery-administrator input and forced session invalidation. Native migration supports Keycloak 26.6.1 → 26.6.2, not downgrades or PostgreSQL major upgrades. Governing contract/guide revision: `bartl-app` `e891fac99edb16a5349b6e86577dbdab7720f108`.
+Current stable release remains `0.8.0`, Keycloak 26.6.2, PostgreSQL 17.6, Restic 0.19.1 and CRD revision 3. Its API and in-place evidence are historical, not candidate qualification.
 
-The runtime and replacement decisions of 2026-11-26 below are documentation-only targets for a future package installed on fresh target state, governed by the application contract and operating guide. They are not part of stable 0.8.0 or a claim of published implementation. The release and historical qualification descriptions here retain their original scope.
+This checkout implements the **unqualified `0.9.0-dev.1` v1alpha2 candidate**, governed by `bartl-app` `d1cd9702a50fe6b43afae7dfb63632fe2731ab28` and GmbH ADR-10 `84537f9`. It is not published or live-qualified. Supported native data transitions remain 26.6.1 → 26.6.2 and same-version 26.6.2 with PostgreSQL 17, not downgrades or PostgreSQL major upgrades. This pair needs no intermediate native hop. Exact candidate artifacts, all contract cases and standalone procedure execution still require qualification; no historical check is silently reused.
 
 The README uses Base's shared `load_deployment` context: each deployment directory sources its cluster `.envrc` and selects one recorded deployment. The loader checks cluster and directory identity and exports placement plus the normalized `$WORK_DIR/packages/<package>/<version>` chart root without network access. Current creation procedures generate the selectors; resumption uses retained selectors rather than a context-migration procedure.
 
@@ -39,19 +39,18 @@ Keycloak's durable state lives in PostgreSQL. A Deployment suffices for Keycloak
 
 Capture uses PostgreSQL dumps rather than realm export to preserve identities, credentials/MFA, roles, client relationships and signing material.
 
-One namespace-local controller coordinates database provisioning, recovery Jobs, Keycloak startup and traffic admission. In the current implementation Helm renders its configuration and replica intent as well as the controller Deployment, not the lifecycle-owned workloads. Native `kc.sh start` owns initialization and migration. The controller drains predecessor processes before migration and admits traffic after verified native startup.
+One namespace-local controller coordinates provisioning, recovery Jobs, startup and access. Helm renders static configuration and controller infrastructure, never runtime running/replica intent. Native `kc.sh start` owns initialization and migration. The controller drains predecessor processes before migration and admits traffic after verified native startup.
 
 Normal restart disables native empty initialization: otherwise state loss could silently create a new instance. Established-target PVC metadata avoids recurring database/schema observation; a local guard checks target binding and supported native model version. Existing state needs no backup access. Only confirmed absence permits backup lookup and, if no matching point exists, initialization.
 
-The current implementation observes replica intent at completion: a restore transaction may finish with Keycloak stopped, and PostgreSQL remains available for diagnosis. This is the existing Keycloak-only stop boundary, not the whole-application stop defined below.
 
-### Target runtime interface — not yet implemented
+### Runtime interface
 
-The proposed target API is `keycloak.bartl.sh/v1alpha2`, retaining group `keycloak.bartl.sh` and Kind `KeycloakApplication`. The new version makes the changed whole-application `Stopped` contract explicit rather than silently changing `v1alpha1` semantics. Helm owns the immutable package selection and static configuration, never live run/stop or replica intent. The application CR owns durable runtime intent independently of the installation configuration. Creation defaults may initialize a new CR once; same-installation static-configuration reconciliation and controller restarts must preserve existing runtime intent, including an intentional stop. This is not a promise of in-place package-upgrade compatibility. Helm must not render competing runtime overrides from `operations.deployments`, service settings or retained Helm values.
+The API is `keycloak.bartl.sh/v1alpha2`, retaining group and Kind `KeycloakApplication`. Its changed whole-application `Stopped` contract is explicit; there is no v1alpha1 conversion/adoption. Helm owns package selection and static configuration, never run/stop or replica intent. The CR owns that intent durably. API defaults initialize a new CR once; static configuration and controller restarts must preserve it. The README precreates the CR with chosen intent through native `kubectl create` before installing the controller; static Helm ownership metadata allows subsequent installation without either runtime field in the Helm manifest.
 
 `spec.running` controls the complete logical application. `spec.application.replicas` controls the desired number of Keycloak replicas while the application is enabled. With `spec.running: false`, whole-application stop dominates any positive replica count without erasing that count. With `spec.running: true` and `spec.application.replicas: 0`, only Keycloak is scaled to zero: the dedicated PostgreSQL database remains available, including for capture and diagnosis. That state must not be reported as whole-application `Stopped`.
 
-A CR scale subresource targeting `spec.application.replicas` is planned for native scaling through the application interface. Scaling the generated Deployment is not the durable interface. Neither scaling nor restarting an individual component may change `spec.running` or awaken a stopped application.
+The CR scale subresource targets `spec.application.replicas` for `kubectl scale keycloakapplication/keycloak`. Scaling the generated Deployment is not durable intent. Scaling or restarting a component must not change `spec.running` or awaken a stopped application.
 
 Fresh installations default to `spec.running: true` and one Keycloak replica; those defaults apply only at creation. Routine stop, start, scaling, status and component restart require no chart acquisition, connection rendering or local installation-value edits. A replacement procedure must select its initial runtime intent before application execution; a stopped target must not briefly start through an unconditional creation default.
 
@@ -63,11 +62,10 @@ Individual Keycloak and PostgreSQL restarts remain native workload operations, n
 
 This target is installed on fresh target state, including replacement from a supported backup. There is no migration or adoption of the predecessor's CRs, generated Kubernetes resources, controller operation records or runtime overrides, and no compatibility shim. A replacement target receives explicitly selected new runtime intent; it must not blindly inherit a stopped source's intent. Sharing logical identity, static configuration or a recovery point does not share live runtime authority. Supported backup/data migration is required and is distinct from Kubernetes-state adoption.
 
-The current API has `spec.application.replicas`, but no `spec.running`; the CRD exposes only the status subresource, not scale. Current Helm rendering still projects deployment-specific replica overrides, and the README's persistent-stop procedure leaves PostgreSQL running. Those schemas, implementation and recipes are unchanged by this decision. They remain the available interface for their matching package revision, not an implementation of this target. Existing stop, stopped-capture, restart and failure evidence must not be reused as qualification of whole-stack stop, runtime ownership separation or CR scaling.
 
-### Target replacement and update path — not yet implemented
+### Replacement and update path
 
-Replacement on independent target storage is the required update path for this target design. It uses the same source-independent reconstruction and native migration machinery as disaster recovery; an in-place package update is not an additional supported path. The operator selects the destination package version, not intermediate migration hops. Each target release must declare the supported source backup formats and native data versions. For those versions, the package must automatically run any necessary intermediate native versions, retain independently obtainable immutable artifacts for all required hops, and isolate a failed or uncertain hop on the target without changing the source or admitting production access. Unsupported backups, data versions and downgrades must be refused without destructive fallback.
+Replacement on independent target storage is the required package-update path. It uses source-independent reconstruction and native migration; there is no in-place package update, coordinator-state adoption or compatibility shim. The operator selects the destination package, not migration hops. For declared 26.6.1 → 26.6.2 and same-version transitions, native startup performs the work without intermediate artifacts. A changed package/image selection on existing bound storage is refused. Failed/uncertain work stays isolated; unsupported backup/data versions and downgrades are refused without initialization fallback.
 
 Blue/green denotes sequential replacement placements, not concurrent active writers or automatic failover. Source and target may use separate namespaces such as `keycloak-blue` and `keycloak-green`, each with `KeycloakApplication/keycloak`, independent volumes and a namespace-local controller. They retain the same logical application identity and production hostname. Coexistence in one cluster requires a shared CRD compatible with every needed package/controller; namespace separation does not isolate CRD semantics. An incompatible API transition may require a new target cluster rather than conversion of old Kubernetes state.
 
@@ -91,9 +89,11 @@ Recovery retains native Keycloak session semantics. The package neither invokes 
 
 Online `pg_dump` needs PostgreSQL, not running Keycloak. The backup worker validates the dump, publishes `/keycloak.dump` and `/manifest.json`, then reads back the complete snapshot before issuing its JSON receipt. Streaming avoids loading a database dump into memory. Lost database exclusion or termination cancels native children.
 
+A dedicated `keycloak-capture` PVC, sized from database storage rather than another operator choice, retains complete captures across publication failures. The next admitted backup publishes retained complete work before capturing current database state, so a final receipt never represents only an earlier failed publication. Include temporary capture capacity in planning. Both database and capture PVCs survive stop/uninstall until an explicit retention decision. These changed worker semantics require new exact-image qualification.
+
 The controller-owned CronJob admits scheduled/manual capture. Already admitted Jobs retain their configuration when scheduling is suspended or the CronJob is removed. Backup failure must not stop a healthy application, override stop/routing intent or introduce repository access into normal restart.
 
-For the target runtime interface, backup scheduling and manual admission additionally obey whole-application running authority. Keycloak-only zero replicas still permits a database capture; whole-application stop does not wake PostgreSQL to take one. Already admitted work must reach a safe completion or confirmed cancellation before `Stopped` can be asserted. Failed capture or uncertain state cannot authorize restart, and publication failure alone must neither stop an otherwise healthy enabled application nor override an intentional stop.
+Backup admission obeys running authority. Keycloak-only zero replicas permits capture; whole-application stop removes the CronJob without deleting admitted Jobs, drains work and never wakes PostgreSQL for backup. `Stopped` requires confirmed component/work termination. Failed or uncertain capture cannot authorize restart; publication failure alone neither stops a healthy enabled application nor overrides stop.
 
 ## Failure and re-entry
 
@@ -103,19 +103,19 @@ New running intent cannot clear that failure. Keep the target isolated with diag
 
 ## Ownership and isolation
 
-The [CRD](chart/crds/keycloakapplications.yaml) records the available API schema; the [input reference](README.md#helm-inputs-and-connections) owns current configuration and Secret bindings. Helm currently renders the CR, controller/RBAC and optional certificate request. The application controller owns database/application workloads, Jobs, schedules and routing. cert-manager owns certificate issuance and renewal; native workers have no Kubernetes mutation authority.
+The [CRD](chart/crds/keycloakapplications.yaml) records the API schema; the [input reference](README.md#helm-inputs-and-connections) owns static configuration and Secret bindings. Helm renders the static CR, controller/RBAC and optional certificate request. The controller owns database/application workloads, Jobs, schedules and routing. cert-manager owns certificate issuance/renewal; native workers have no Kubernetes mutation authority.
 
-Current deployment-specific overrides are projected on copies of service settings. That is the existing rendering model, not the target ownership model: the target retains deployment selection for placement and static configuration while runtime intent lives only on each target's application CR. Connection rendering uses the same helpers, not previously calculated `resolved` output. Neither rendering nor a declared issuer creates native realms or clients.
+Deployment selection resolves placement/package/static settings only. Runtime fields in service settings and operational overrides are rejected. Connection rendering uses static helpers, not previously calculated `resolved` output. Neither rendering nor a declared issuer creates realms or clients.
 
 Secrets are read by explicit name, not through a namespace-wide informer. Backup workers receive repository-role and database credentials, never destructive repository authority. Reader access includes native lock writes but no backup-content mutation. Restic locks coordinate cooperating clients, not malicious deletion.
 
-Owner UID checks prevent adoption of foreign resources; labels are not authorization. Database PVCs survive uninstall, but a new CR UID cannot automatically adopt their binding. Ingress maintenance requires preserved client addresses and no backend bypass. Ingress restriction does not suppress restored SMTP, federation or custom-listener effects; these need separate outbound isolation.
+Owner UID checks prevent foreign-resource adoption; labels are not authorization. Database/capture PVCs survive uninstall, but a new CR cannot adopt their binding. Restored database metadata receives a fresh target binding; source coordinator state is never adopted. Ingress maintenance requires preserved client addresses and no backend bypass. NetworkPolicy restricts Keycloak egress to its database, peers and DNS; SMTP/federation/custom remote effects are outside this stock isolated profile. The runbook checks additive policies and actual denial rather than claiming ingress restriction suppresses effects.
 
 ## Shared CRD and package compatibility
 
 The namespace-local controllers share one cluster-scoped CRD. [Helm installs missing CRDs but does not upgrade or delete existing ones](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/). The controller does not manage the CRD.
 
-Each release must declare compatible CRD/API revisions, operation records and native backup/data transitions. A shared-schema change needs a separate administrator operation covering every installed controller; retaining a group or Kind is not compatibility. For the proposed `v1alpha2` target, prove that any CRD installed alongside the source preserves the source controller's needed API/storage behavior as well as the target's. There are no color-specific CRDs. If those requirements cannot coexist, require a new target cluster and restore supported backup/data there. This target does not require conversion, stored-object migration, compatibility shims or adoption of old CRs.
+Each release declares compatible CRD/API revisions and native transitions. A pre-v1alpha2 source requires a new target cluster: no old served API, conversion, stored-object migration or adoption. Already-v1alpha2 coexistence still requires review of every installed controller against the shared definition; namespaces/colors do not isolate CRD semantics.
 
 Leader election does not fence existing SQL. Restarting a controller within an installation must understand that installation's operation records or refuse before transition work; this does not require a replacement target to inherit predecessor controller state. CRD deletion removes CRs across namespaces and loses intent/evidence even when PVCs survive; it is not application cleanup.
 
@@ -147,12 +147,12 @@ The regression creates/removes its own database and role; without the variable i
 
 | File | Required fixture inputs |
 | --- | --- |
-| `runtime.json` | `kubeconfig`, `server`, historical `sourceChart`, candidate `chart`, fixture `backupImage`, and explicit `candidateRelease: "0.8.0"`. `chart` must name the exact retained local candidate archive; do not inherit the historical version default. |
+| `runtime.json` | `kubeconfig`, `server`, exact candidate `chart`, fixture `backupImage`, and explicit `candidateRelease: "0.9.0-dev.1"`. Never inherit a historical release default. |
 | `credentials.json` | `admin`, `user`, `restic` encryption password, and REST authentication passwords `reader` and `writer`. |
 | `repository.crt` | Trusted repository CA certificate. |
-| `source-values.json` | Retained pre-0.6 source values, including its HTTPS `configuration.hostname`; historical source commands keep that release's interface. |
+| `source-values.json` | Candidate fixture's HTTPS `configuration.hostname`, database settings, bootstrap Secret name and ingress settings; not an old Helm runtime interface. |
 
-Prepare ready source `kc-a4-source` with trusted HTTPS and TLS Secret `kc-a4-tls`. Initialize the separate repository at `rest:https://backup-store.kc-a4-repository.svc/keycloak/`, with an append-only writer and a data-read-only, lock-writable reader, including exact lock-object permissions on refusal paths. Import candidate images before running. Retain the exact private fixture setup and diagnostics with the qualification artifacts, outside Git.
+Prepare ready **v1alpha2 candidate** source `kc-a4-source` with the same exact chart and trusted TLS Secret `kc-a4-tls`; retain its normalized static values as `<state>/kc-a4-source/installation.yaml`. Install the candidate CRD once before scenarios. Initialize the repository at `rest:https://backup-store.kc-a4-repository.svc/keycloak/` with append-only writer and data-read-only/lock-writable reader, including exact lock-object permissions on refusal paths. Import images before running; retain private fixture setup/diagnostics outside Git. Old-API migration belongs in A5 on a separate source cluster.
 
 For a controller OCI archive already transferred to a qualification node, set `CONTROLLER_ARCHIVE` to its verified absolute path and use a fully qualified import base:
 
@@ -163,7 +163,7 @@ k3s ctr images import --base-name ghcr.io/bartlapp/bartl-keycloak-controller \
 
 Use the corresponding repository base for other operating images. Verify actual container admission before starting stateful qualification; an image listing alone is insufficient. Unqualified auto-generated import names can leave an unusable CRI reference. This is local fixture preparation, not a reason to alter the qualified manifest or bypass registry/TLS checks.
 
-Helm 4.3.2 passes its default server-side-apply setting to [CRD installation](https://github.com/helm/helm/blob/v4.3.2/pkg/action/install.go). The live migration fixture observed revision 2 become revision 3 when the replacement release was installed. Preserve schema-admission refusal as a valid unsupported-package boundary, together with explicit checks that data and active routing remain unchanged.
+Historical Helm 4.3.2 qualification observed cluster-wide CRD replacement. That is not permission to overwrite an incompatible predecessor schema: current old-API migration uses a separate target cluster and retains schema refusal plus unchanged active data/routing checks.
 
 Invoke scenarios individually against their prepared fixture state; this list is not a replay/repair script:
 
@@ -172,6 +172,7 @@ node tests/kc-a4.mjs source
 node tests/kc-a4.mjs ordinary
 node tests/kc-a4.mjs conflict
 node tests/kc-a4.mjs fresh
+node tests/kc-a4.mjs initial-stopped
 node tests/kc-a4.mjs vanilla
 node tests/kc-a4.mjs restore
 node tests/kc-a4.mjs fallback
@@ -184,33 +185,31 @@ node tests/kc-a4.mjs stale
 node tests/kc-a4.mjs unsupported
 ```
 
-`ordinary` covers replicas, restart, persistent stop, stopped capture, unreadable database credentials and invalid replica intent, and advances the selected snapshot. `conflict` requires scheduled/manual refusal under a native lock; `vanilla` checks trusted-HTTPS administrator login in both fresh-state branches. `interruption` covers blocked catalog mutation, interrupted/duplicate restore, lost post-commit acknowledgement and controller restart under stop intent, requiring refusal and independent-target retry. `stale` covers healthy unchanged reconciliation and foreign-binding refusal; `unsupported` requires refusal without replay or data loss. Include controller-to-PostgreSQL outage checks of readiness and access when qualifying observation loss.
+`ordinary` covers native scale, independent component restarts, whole-application stop including PostgreSQL, runtime ownership across static apply/controller restart, stopped-component restart non-awakening, Keycloak-zero capture, unreadable credentials and invalid replicas. `conflict` requires scheduled/manual native-lock refusal; `vanilla` checks trusted-HTTPS administration in both fresh branches. `interruption` retains catalog, duplicate-worker, interrupted restore, lost acknowledgement and independent retry checks. `stale` covers unchanged reconciliation/foreign binding; `unsupported` requires refusal without replay/data loss. Exact-artifact qualification also requires observation loss, retained capture/publication failure, stop during admitted backup/restore/migration, stale completion, fresh stopped creation and occupied-slot cases; these harnesses alone do not qualify every obligation.
 
-For source-independent restoration, stop the source controller, wait for its Pod to disappear, then stop its database, retaining PVC and inputs. `fallback` may reactivate the original only for consequence-free synthetic tests.
+Source-independent restore leaves the predecessor whole-stopped/controller-unavailable. `fallback` may reactivate it only for explicitly consequence-free synthetic tests; normal restore has no automatic source restart.
 
-### Replacement and upgrade harness
+### Replacement migration harness
 
-`tests/kc-a5.mjs` uses `kc-a5-*` namespaces on the authorized worker. `KC_A5_STATE` (default `.lab/kc-a5`) holds `runtime.json`, `credentials.json` and `repository.crt`. Credentials have the same keys as the recovery harness. Runtime inputs are `kubeconfig`, `apiServer`, `baselineChart`, `candidateChart`, `candidateController`, `candidateKeycloak`, `candidateBackup`, `hostname` and allowed worker-host `adminIPv4`. Set `candidateRelease` explicitly to `"0.8.0"` and `candidateChart` to the exact retained local candidate archive, not a historical default.
+`tests/kc-a5.mjs` uses `kc-a5-*` namespaces. `KC_A5_STATE` holds `runtime.json`, `credentials.json` and `repository.crt` (default `.lab/kc-a5`). Credentials match A4. Runtime supplies target `kubeconfig`/`apiServer`, **independent old-API** `sourceKubeconfig`/`sourceAPIServer`, `baselineChart`, `candidateChart`, `candidateController`, `candidateKeycloak`, `candidateBackup`, `hostname`, allowed `adminIPv4` and explicit `candidateRelease: "0.9.0-dev.1"`. Install target CRD before the harness; differing API endpoints are mandatory. Both clusters need independent access to the supplied repository at the declared fixture hostname.
 
-The baseline is committed 0.3.0 source rebuilt on Hetzner. Prepare its trusted HTTPS TLS Secret `kc-a5-tls` and initialized repository at `rest:https://backup-store.kc-a5-repository.svc/keycloak/` with the reader/writer permissions above. The unrelated `kc-a5-probe` Pod supplies denied-source/backend-isolation checks, separate from the allowed worker host. Optional `sshConfig` selects the retained SSH configuration for external checks through host `k3s`; optional `base` overrides the public URL.
+Select `baselineRelease`/`sourceVersion` explicitly. Public released `0.8.0` with native `26.6.2` supplies old-API source → v1alpha2 same-version reconstruction. The historical `0.3.0` fixture with native `26.6.1` was built from privately retained source, is **not independently obtainable from the public registry**, and cannot currently establish standalone migration qualification. Its harness adapter requires an actually retained verified chart; it does not create that prerequisite. Real 26.6.1 backup/native artifact availability and migration/interruption qualification remain unresolved until supplied and exercised. Never relabel 26.6.2 data or synthesize a version marker as migration evidence. Prepare source `kc-a5-tls` and the repository at `rest:https://backup-store.kc-a5-repository.svc/keycloak/`. Source preparation retains TLS/PVC comparison inputs before retirement; candidate installation does not acquire them from the predecessor. Target `kc-a5-probe` supplies denied/backend checks. Hostname routing remains an explicit authorized fixture operation. Optional `sshConfig` selects external checks through host `k3s`; optional `base` overrides the URL.
 
 ```bash
 node tests/kc-a5.mjs source
-node tests/kc-a5.mjs replacement
-node tests/kc-a5.mjs bypass
-node tests/kc-a5.mjs fallback
-node tests/kc-a5.mjs upgrade
+# For an actual 26.6.1 source only:
 node tests/kc-a5.mjs interruption
+# Switch approved fixture routing to target before HTTPS acceptance:
 node tests/kc-a5.mjs replacement-upgrade
+node tests/kc-a5.mjs bypass
 node tests/kc-a5.mjs downgrade
 node tests/kc-a5.mjs open
+# Optional consequence-free fallback uses its own declared fixture state.
 ```
 
-`interruption` holds a native table lock, restarts the controller during migration and applies persistent stop; incomplete migration must not restart blindly, and the refused target remains available for diagnosis. `downgrade` presents the old package to migrated disposable state and requires refusal without data changes. For a fresh upgrade exercise from an independently recovered baseline, prepare its TLS Secret, select its namespace through optional runtime `source`, then run:
+`source` captures 26.6.1 with zero Keycloak/running PostgreSQL, then retires controller/database. `interruption` reconstructs independent candidate storage, blocks migration and checks controller restart, stop and persistent refusal. `replacement-upgrade` provides independent successful retry, preserving IDs, native sessions, configuration and exact images. `downgrade` refuses an old incompatible package on another empty target, checking active data/routing unchanged; it is not an in-place native downgrade test. `open` checks ordinary access, new work, another backup and reconstruction of that work. No scenario performs an in-place Helm package upgrade.
 
-```bash
-node tests/kc-a5.mjs restore-source
-```
+Run scenarios individually against their declared state; run interruption before independent successful replacement. The source/target access-routing switch uses the fixture's approved native infrastructure/DNS procedure. Never infer that installing the target changes public routing.
 
 Record exact artifacts and exercised failure boundaries in the release evidence. Acceptance includes real login/use, new work and a subsequent usable backup; namespace separation alone does not prove host/provider-loss recovery.
 

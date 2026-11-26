@@ -46,6 +46,56 @@ check('standalone input derives hostname and stable identity without backup', ()
   assert.equal(spec.configuration.hostname, 'https://login.acme.example');
   assert.equal(spec.backup, undefined);
 });
+check('v1alpha2 defaults runtime intent at creation and exposes native scale', () => {
+  const crds = documents(spawnSync(helm, ['show', 'crds', chart], {encoding: 'utf8'}));
+  const crd = crds.find(doc => doc?.kind === 'CustomResourceDefinition' && doc.spec.names.kind === 'KeycloakApplication');
+  assert.ok(crd);
+  assert.deepEqual(crd.spec.versions.map(version => [version.name, version.served, version.storage]), [['v1alpha2', true, true]]);
+  const version = crd.spec.versions[0];
+  const schema = version.schema.openAPIV3Schema.properties;
+  assert.equal(schema.spec.properties.running.default, true);
+  assert.deepEqual(schema.spec.properties.application.default, {});
+  assert.equal(schema.spec.properties.application.properties.replicas.default, 1);
+  assert.equal(schema.spec.properties.application.properties.replicas.minimum, 0);
+  assert.equal(schema.status.properties.replicas.format, 'int32');
+  assert.equal(schema.status.properties.selector.type, 'string');
+  assert.deepEqual(version.subresources.scale, {
+    specReplicasPath: '.spec.application.replicas',
+    statusReplicasPath: '.status.replicas',
+    labelSelectorPath: '.status.selector',
+  });
+});
+check('static manifests support explicit creation before controller execution without owning runtime fields', () => {
+  const values = base();
+  const {spec, docs} = application(values, {namespace: 'green', showOnly: 'templates/application.yaml'});
+  assert.equal(docs.length, 1);
+  const app = docs[0];
+  assert.equal(app.apiVersion, 'keycloak.bartl.sh/v1alpha2');
+  assert.equal(app.metadata.labels['app.kubernetes.io/managed-by'], 'Helm');
+  assert.equal(app.metadata.annotations['meta.helm.sh/release-name'], 'keycloak');
+  assert.equal(app.metadata.annotations['meta.helm.sh/release-namespace'], 'green');
+  assert.equal(Object.hasOwn(spec, 'running'), false);
+  assert.equal(Object.hasOwn(spec.application ?? {}, 'replicas'), false);
+  values.services.keycloak.hostname = 'changed.example';
+  const next = application(values, {namespace: 'green'}).spec;
+  assert.equal(Object.hasOwn(next, 'running'), false);
+  assert.equal(Object.hasOwn(next.application ?? {}, 'replicas'), false);
+  assert.equal(next.configuration.hostname, 'https://changed.example');
+});
+check('obsolete runtime Helm authorities are rejected instead of silently ignored', () => {
+  for (const connections of [false, true]) {
+    for (const service of [{running: false}, {replicas: 0}, {application: {replicas: 2}}]) {
+      const values = base(); values.services.keycloak = service;
+      rejects(values, /unknown/, {connections});
+    }
+    for (const field of ['running', 'replicas']) {
+      const values = base(); values[field] = false;
+      rejects(values, /schema|allowed|false/i, {connections});
+      const selected = selection(); selected.operations.deployments.source[field] = field === 'running' ? false : 0;
+      rejects(selected, /runtime intent/, {connections, namespace: 'source'});
+    }
+  }
+});
 check('release inventory accepts the selected artifact and rejects a different package', () => {
   const v = base(); v.services.keycloak.release = chartVersion;
   assert.equal(application(v).spec.packageRelease, chartVersion);
@@ -98,10 +148,10 @@ check('instance selection is independent of Helm release and ignores unrelated s
   assert.equal(spec.configuration.hostname, 'https://accounts.example');
   assert.equal(spec.observed, undefined);
 });
-check('zero, false, map siblings and replacement lists survive defaulting', () => {
-  const v = base(); v.services.keycloak = {application: {replicas: 0}, database: {size: '8Gi'}, ingress: {enabled: false, administratorSourceRanges: ['192.0.2.1/32'], controllerPodLabels: {custom: 'edge'}}};
+check('false, map siblings and replacement lists survive static defaulting', () => {
+  const v = base(); v.services.keycloak = {database: {size: '8Gi'}, ingress: {enabled: false, administratorSourceRanges: ['192.0.2.1/32'], controllerPodLabels: {custom: 'edge'}}};
   const {spec} = application(v);
-  assert.equal(spec.application.replicas, 0); assert.equal(spec.ingress.enabled, false);
+  assert.equal(spec.application, undefined); assert.equal(spec.ingress.enabled, false);
   assert.equal(spec.database.size, '8Gi'); assert.equal(spec.database.secretName, 'keycloak-database');
   assert.deepEqual(spec.ingress.administratorSourceRanges, ['192.0.2.1/32']);
   assert.deepEqual(spec.ingress.controllerPodLabels, {'app.kubernetes.io/name': 'traefik', custom: 'edge'});
@@ -189,11 +239,10 @@ check('removed recovery administrator input is rejected in both render modes', (
   const v = base(); v.services.keycloak.recoveryAdminSecret = 'obsolete-admin';
   for (const connections of [false, true]) rejects(v, /unknown/, {connections});
 });
-const selection = () => ({
+function selection() { return {
   ...base(), deployment: 'source',
   services: {
     'identity.provider': {
-      application: {replicas: 2},
       ingress: {enabled: true, maintenance: true, administratorSourceRanges: ['192.0.2.1/32']},
       backup: {repository: 'rest:https://backup.example/acme/', suspend: true},
     },
@@ -206,16 +255,16 @@ const selection = () => ({
   },
   packages: {candidate: {version: chartVersion, chart: 'local-candidate'}, foreign: null},
   operations: {deployments: {
-    source: {replicas: 0, ingressEnabled: false, maintenance: false, backupSuspend: false, recordedBy: 'operator'},
-    target: {replicas: 1, ingressEnabled: true, maintenance: true, backupSuspend: true},
+    source: {ingressEnabled: false, maintenance: false, backupSuspend: false, recordedBy: 'operator'},
+    target: {ingressEnabled: true, maintenance: true, backupSuspend: true},
     foreign: 'unrelated',
   }},
-});
-check('deployment intent overrides stable dotted instance without selecting unrelated inputs', () => {
+}; }
+check('deployment static overrides select the stable dotted instance without consuming unrelated inputs', () => {
   const v = selection();
   const {spec} = application(v, {namespace: 'source'});
   assert.deepEqual(spec.identity, {installation: 'acme', instance: 'identity.provider'});
-  assert.equal(spec.application.replicas, 0);
+  assert.equal(spec.application, undefined);
   assert.equal(spec.ingress.enabled, false);
   assert.equal(spec.ingress.maintenance, false);
   assert.equal(spec.backup.suspend, false);
@@ -227,19 +276,19 @@ check('deployment intent overrides stable dotted instance without selecting unre
   v.instance = 'identity.provider';
   application(v, {namespace: 'source'});
 });
-check('absent deployment intent inherits service choices and then chart defaults', () => {
+check('absent deployment overrides inherit static service choices and then chart defaults', () => {
   const v = selection();
   for (const intent of [undefined, {}]) {
     if (intent === undefined) delete v.operations; else v.operations = {deployments: {source: intent}};
     const {spec} = application(v, {namespace: 'source'});
-    assert.equal(spec.application.replicas, 2);
+    assert.equal(spec.application, undefined);
     assert.equal(spec.ingress.enabled, true);
     assert.equal(spec.ingress.maintenance, true);
     assert.equal(spec.backup.suspend, true);
   }
   v.services['identity.provider'] = {};
   const {spec} = application(v, {namespace: 'source'});
-  assert.equal(spec.application.replicas, 1);
+  assert.equal(spec.application, undefined);
   assert.equal(spec.ingress.maintenance, false);
   assert.equal(spec.backup, undefined);
   delete v.deployment;
@@ -291,8 +340,8 @@ again: {{ mustToJson $again | quote }}
     assert.equal(d.before, d.after);
     assert.equal(d.source, d.again);
     const source = JSON.parse(d.source), target = JSON.parse(d.target);
-    assert.deepEqual([source.application.replicas, source.ingress.enabled, source.ingress.maintenance, source.backup.suspend], [0, false, false, false]);
-    assert.deepEqual([target.application.replicas, target.ingress.enabled, target.ingress.maintenance, target.backup.suspend], [1, true, true, true]);
+    assert.deepEqual([source.ingress.enabled, source.ingress.maintenance, source.backup.suspend], [false, false, false]);
+    assert.deepEqual([target.ingress.enabled, target.ingress.maintenance, target.backup.suspend], [true, true, true]);
   } finally { rmSync(temp, {recursive: true, force: true}); }
 });
 check('every rendering mode rejects missing selected references and invocation mismatches', () => {
@@ -324,7 +373,6 @@ check('selected consumed mapping and intent fields reject malformed values in ev
     v => { v.operations = []; },
     v => { v.operations.deployments = []; },
     v => { v.operations.deployments.source = null; },
-    ...[-1, 1.5, '0', null, 2147483648].map(value => v => { v.operations.deployments.source.replicas = value; }),
     ...['ingressEnabled', 'maintenance', 'backupSuspend'].flatMap(field => ['false', 0, null].map(value => v => { v.operations.deployments.source[field] = value; })),
   ];
   for (const connections of [false, true]) for (const change of changes) {

@@ -57,8 +57,7 @@ func TestNativeStartupObservation(t *testing.T) {
 	if err != nil || observed.Classification != "Unverified" || observed.Reason != "NativeInitializationAdmitted" {
 		t.Fatalf("admitted initialization must not query unfinished native schema: %+v, %v", observed, err)
 	}
-	// Completed historical metadata must work both before and after the supported
-	// migration. The current version is also the ordinary 0.4.0 replacement path.
+	// New targets reconstruct application data, never adopt old coordinator records.
 	if _, err := conn.Exec(ctx, "ALTER TABLE migration_model ADD COLUMN update_time bigint; INSERT INTO migration_model VALUES ('"+Version+"',1)"); err != nil {
 		t.Fatal(err)
 	}
@@ -86,28 +85,15 @@ func TestNativeStartupObservation(t *testing.T) {
 			if err := setDatabaseComment(ctx, conn, binding+":recovery:"+string(payload)); err != nil {
 				t.Fatal(err)
 			}
-			result, err := Observe(ctx, conn, binding)
-			want := "Valid"
-			if version == UpgradeSourceVersion {
-				want = "Upgradeable"
-			}
-			if err != nil || result.Classification != want {
-				t.Fatalf("completed historical state must permit native startup: %+v, %v", result, err)
-			}
-			converted, err := ReadRecovery(ctx, conn, binding)
-			if err != nil || converted == nil || !converted.StartupStarted || converted.SnapshotID != legacy.SnapshotID {
-				t.Fatalf("conversion must preserve the completed recovery identity: %+v, %v", converted, err)
-			}
-			legacy.Phase = "Restored"
-			payload, err = json.Marshal(legacy)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := setDatabaseComment(ctx, conn, binding+":recovery:"+string(payload)); err != nil {
-				t.Fatal(err)
-			}
 			if _, err := Observe(ctx, conn, binding); err == nil {
-				t.Fatal("ambiguous historical recovery must not become ordinary startup")
+				t.Fatal("historical coordinator state must not be adopted")
+			}
+			var retained string
+			if err := conn.QueryRow(ctx, "SELECT shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()").Scan(&retained); err != nil {
+				t.Fatal(err)
+			}
+			if retained != binding+":recovery:"+string(payload) {
+				t.Fatal("refusal mutated historical coordinator state")
 			}
 		})
 	}

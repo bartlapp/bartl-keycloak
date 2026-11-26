@@ -23,21 +23,20 @@ import (
 // RecoveryRecord binds a native transaction outcome to one physical target.
 // Source database identities remain in the independently verified manifest.
 type RecoveryRecord struct {
-	OperationID           string         `json:"operationID"`
-	Phase                 string         `json:"phase"`
-	Binding               string         `json:"binding"`
-	DatabaseIdentity      string         `json:"databaseIdentity"`
-	Installation          string         `json:"installation"`
-	Instance              string         `json:"instance"`
-	ApplicationUID        string         `json:"applicationUID"`
-	PVCUID                string         `json:"pvcUID"`
-	RepositoryID          string         `json:"repositoryID"`
-	SnapshotID            string         `json:"snapshotID"`
-	DumpSHA256            string         `json:"dumpSHA256"`
-	DumpBytes             int64          `json:"dumpBytes"`
-	StartupStarted        bool           `json:"startupStarted,omitempty"`
-	InitializationStarted bool           `json:"initializationStarted,omitempty"`
-	Upgrade               *UpgradeRecord `json:"upgrade,omitempty"`
+	OperationID           string `json:"operationID"`
+	Phase                 string `json:"phase"`
+	Binding               string `json:"binding"`
+	DatabaseIdentity      string `json:"databaseIdentity"`
+	Installation          string `json:"installation"`
+	Instance              string `json:"instance"`
+	ApplicationUID        string `json:"applicationUID"`
+	PVCUID                string `json:"pvcUID"`
+	RepositoryID          string `json:"repositoryID"`
+	SnapshotID            string `json:"snapshotID"`
+	DumpSHA256            string `json:"dumpSHA256"`
+	DumpBytes             int64  `json:"dumpBytes"`
+	StartupStarted        bool   `json:"startupStarted,omitempty"`
+	InitializationStarted bool   `json:"initializationStarted,omitempty"`
 }
 
 func recoveryComment(r *RecoveryRecord) string {
@@ -46,12 +45,6 @@ func recoveryComment(r *RecoveryRecord) string {
 }
 
 func validateRecoveryRecord(r *RecoveryRecord, binding string) error {
-	if err := validateUpgrade(r.Upgrade); err != nil {
-		return err
-	}
-	if r.Upgrade != nil && r.Phase != "Restored" && r.Phase != "Complete" {
-		return errors.New("recovery upgrade requires restored or complete native state")
-	}
 	if r.Binding != binding || r.Binding != fmt.Sprintf("bartl-keycloak:%s:%s:%s:%s", r.Installation, r.Instance, r.ApplicationUID, r.PVCUID) {
 		return errors.New("recovery binding does not match the current target")
 	}
@@ -103,33 +96,7 @@ func ReadRecovery(ctx context.Context, conn *pgx.Conn, binding string) (*Recover
 	if !strings.HasPrefix(comment, prefix) {
 		return nil, nil
 	}
-	// Convert completed historical input metadata once. No live catalog digest is
-	// computed or compared; pending/ambiguous historical operations are refused.
 	payload := strings.TrimPrefix(comment, prefix)
-	var fields map[string]json.RawMessage
-	converted := false
-	if json.Unmarshal([]byte(payload), &fields) == nil && fields["schemaFingerprint"] != nil {
-		var digest, phase string
-		if json.Unmarshal(fields["schemaFingerprint"], &digest) != nil || json.Unmarshal(fields["phase"], &phase) != nil || phase != "Complete" || len(digest) != 32 {
-			return nil, errors.New("historical recovery input is not completed metadata")
-		}
-		if _, err := hex.DecodeString(digest); err != nil {
-			return nil, errors.New("historical recovery input digest is malformed")
-		}
-		version, err := nativeVersion(ctx, conn)
-		if err != nil || version != UpgradeSourceVersion && version != Version {
-			return nil, errors.New("historical recovery conversion requires a supported native version")
-		}
-		delete(fields, "schemaFingerprint")
-		if string(fields["initializationStarted"]) != "true" {
-			fields["startupStarted"] = json.RawMessage("true")
-		}
-		data, err := json.Marshal(fields)
-		if err != nil {
-			return nil, err
-		}
-		payload, converted = string(data), true
-	}
 	var r RecoveryRecord
 	decoder := json.NewDecoder(strings.NewReader(payload))
 	decoder.DisallowUnknownFields()
@@ -145,13 +112,8 @@ func ReadRecovery(ctx context.Context, conn *pgx.Conn, binding string) (*Recover
 	if r.DatabaseIdentity != identity {
 		return nil, errors.New("recovery native database identity changed")
 	}
-	if !converted && recoveryComment(&r) != comment {
+	if recoveryComment(&r) != comment {
 		return nil, errors.New("recovery comment is not a canonical native record")
-	}
-	if converted {
-		if err := writeRecovery(ctx, conn, &r); err != nil {
-			return nil, err
-		}
 	}
 	return &r, nil
 }
@@ -172,7 +134,6 @@ func CompleteRecovery(ctx context.Context, conn *pgx.Conn, binding, operationID 
 	if version != Version {
 		return errors.New("recovery startup did not reach the supported target version")
 	}
-	r.Upgrade = nil
 	r.Phase = "Complete"
 	return writeRecovery(ctx, conn, r)
 }

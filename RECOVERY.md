@@ -1,6 +1,6 @@
 # Keycloak recovery and replacement
 
-Use this runbook for reconstruction on independent empty storage, replacement and supported replacement upgrades. For installation and routine operation, use the [README](README.md).
+Use this runbook for the **unqualified v1alpha2 candidate** on independent empty storage, replacement and supported replacement upgrades. Use the [README](README.md) for artifact availability, installation and routine operation. Stable 0.8.0 retains its release-specific procedures; no historical result qualifies these new instructions.
 
 ## Before starting
 
@@ -15,7 +15,7 @@ umask 077
 
 ## Recover or replace a deployment
 
-Recover or replace the deployment on independent storage with the latest release. The package restores the latest matching backup and performs supported native migration automatically. Unsupported transitions stop without activating the target. Before interruption, have target capacity, the downloaded target package, protected inputs, usable backup history and a way to retire the source. The installation's operating agreement supplies interruption, data-loss and acceptance limits.
+Recover or replace on independent storage with the selected exact v1alpha2 package. Supported native data transitions are Keycloak 26.6.2 → 26.6.2 and 26.6.1 → 26.6.2 with PostgreSQL 17; no intermediate Keycloak hop is required for this pair. Downgrades and PostgreSQL major changes are unsupported. The package restores the latest matching backup and migrates automatically. Before interruption, have target capacity, the target artifact, protected inputs, usable backup history and a way to retire the source. The installation's operating agreement supplies interruption, data-loss and acceptance limits.
 
 Source and target keep the same `VALUES`, logical instance and hostname, but use independent namespaces, PVCs, database passwords and deployment intent. Another namespace on the same host does not establish host/provider-loss protection.
 
@@ -26,7 +26,7 @@ Choose the starting mode:
 | Reachable source | Resume it as described below, capture final writes with PostgreSQL running, then retire all source processes. |
 | Lost or already retired source | Use independently retained inputs and a verified recovery point; prevent a returning predecessor from resuming production work. |
 
-Unreachability and DNS changes do not retire a source. Without enforceable retirement, do not activate the target.
+Unreachability and DNS changes do not retire a source. This procedure covers planned replacement under exclusive Kubernetes administrative control and confirmed process termination, with ordinary users denied Kubernetes workload/CR mutation. Before starting, disable or pause every external reconciler, GitOps pipeline or scheduled script that could restart either placement; retain that exclusion until disposal. If these privileges or controls are unavailable, stop activation. This package does not supply provider-loss fencing: lost-source activation requires an already documented and independently enforceable dependency/infrastructure retirement interface. If none exists, target preparation is possible but activation is blocked.
 
 For secondary recovery, use that repository's URL, credentials, encryption key and full **destination** snapshot ID (also after `restic copy`). Verify the matching point before reconstruction; lookup or integrity errors stop startup.
 
@@ -70,6 +70,10 @@ Retain the selected source context:
 SOURCE_DEPLOYMENT=$DEPLOYMENT
 SOURCE_INSTANCE=$INSTANCE
 SOURCE_DIR=$INSTALL_DIR
+SOURCE_CONTEXT=$KUBE_CONTEXT
+SOURCE_NAMESPACE=$NS
+SOURCE_API=$(kubectl --context "$KUBE_CONTEXT" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+SOURCE_CR_UID=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o jsonpath='{.metadata.uid}')
 ```
 
 **Lost or already retired source.** Skip the reachable-source commands. Select the independently retained installation root and source deployment key without contacting it. Set `SOURCE_DIR` to the recovered database/repository inputs and backup receipt; it need not contain a usable source context. For the ordinary example:
@@ -84,7 +88,7 @@ SOURCE_INSTANCE=$(SOURCE_DEPLOYMENT="$SOURCE_DEPLOYMENT" yq -er '.deployments[st
 
 Use retained source PVC/PV identities where available. A return is possible only after restoring the source directory's approved selector and independent cluster access; a protected-input copy alone is not a source context.
 
-**Choose the target.** From either branch, choose an unused deployment key, a supplied cluster and a fresh namespace. Download the latest release before interrupting a reachable source; reuse an existing matching package entry and choose an unused package key only for a different artifact. Keep the source's selected chart and package entry unchanged:
+**Choose the target.** Choose an unused deployment key and an unoccupied blue/green namespace on the supplied target cluster. Slots exchange roles only after a retention decision releases the previous placement; never delete an occupied slot to make creation pass. A source using a pre-v1alpha2 CRD requires a **new target cluster**. No CRD conversion, stored-object migration or adoption is part of this procedure. Acquire the candidate as described in [Obtain the release](README.md#obtain-the-release); normal latest stable acquisition does not yet select it. Keep the source package entry unchanged:
 
 ```bash
 set -euo pipefail
@@ -106,6 +110,7 @@ if [ -n "$MATCHING_PACKAGE" ]; then TARGET_PACKAGE="$MATCHING_PACKAGE"; fi
 yq -e '.packages[strenv(TARGET_PACKAGE)] == null or
   (.packages[strenv(TARGET_PACKAGE)].version == strenv(TARGET_PACKAGE_VERSION) and
    .packages[strenv(TARGET_PACKAGE)].chart == "oci://ghcr.io/bartlapp/bartl-keycloak")' "$VALUES" >/dev/null
+yq -e '.deployments[strenv(TARGET_DEPLOYMENT)] == null' "$VALUES" >/dev/null
 SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i '
   .packages[strenv(TARGET_PACKAGE)] = (.packages[strenv(TARGET_PACKAGE)] // {
     "version": strenv(TARGET_PACKAGE_VERSION), "chart": "oci://ghcr.io/bartlapp/bartl-keycloak"
@@ -115,7 +120,7 @@ SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i '
     "namespace": strenv(TARGET_NAMESPACE), "release": "keycloak", "package": strenv(TARGET_PACKAGE)
   } |
   .operations.deployments[strenv(TARGET_DEPLOYMENT)] = {
-    "replicas": 1, "ingressEnabled": false, "maintenance": true, "backupSuspend": true
+    "ingressEnabled": false, "maintenance": true, "backupSuspend": true
   }
 ' "$VALUES"
 TARGET_DIR="$WORK_DIR/clusters/$TARGET_CLUSTER/applications/$SOURCE_INSTANCE"
@@ -140,7 +145,7 @@ direnv allow "$TARGET_DIR"
 
 The target selector is prepared and approved, but not entered. A reachable source remains selected for final capture and retirement. Package entries are immutable release identities: reuse an exact match, and give a different artifact a new package key rather than rewriting the source's entry.
 
-On a shared cluster, source and target must support the CRD that will remain installed. Helm 4.3.2's server-side-apply install can update an existing cluster-wide definition; a separate namespace does not isolate this change. Inspect installed and target CRD revisions before interruption. An older package using a removed field may be rejected by schema admission before native startup; do not disable validation to bypass that refusal.
+For an already v1alpha2 source, inspect both installed and target CRD definitions before interruption and require compatibility for every remaining controller. Never let a new Helm install overwrite an incompatible cluster-wide definition. If compatibility cannot be established, choose a new target cluster. A separate namespace does not isolate the CRD.
 
 Choose the administrator's actual source CIDR for restricted acceptance. Ingress must preserve client IPs and enforce the allowlist without direct-service, NodePort or alternate-ingress bypass; maintenance restricts both login and administration.
 
@@ -149,29 +154,27 @@ export ADMIN_CIDR=203.0.113.10/32  # Replace with the authorized administrator's
 SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -i '.services[strenv(SOURCE_INSTANCE)].ingress.administratorSourceRanges = [strenv(ADMIN_CIDR)]' "$VALUES"
 ```
 
-Before restored startup, isolate SMTP, federation, custom listeners and other production outbound effects using native controls or enforced network policy. Keep that isolation through testing; ingress restriction alone does not suppress those effects.
+The supported package's native NetworkPolicy limits Keycloak egress to its own PostgreSQL, Keycloak peers and cluster DNS. It therefore isolates restored SMTP, LDAP/federation and remote custom-listener endpoints before startup, provided NetworkPolicy is enforced and no additional selecting policy grants egress. Do not add production dependency grants during acceptance. The executable policy inspection and probe below are mandatory; a policy object alone is not proof of enforcement. Extensions requiring additional network or persistent state need their own supported inventory and procedure before this run can proceed.
 
 #### 2. Capture final writes and retire a reachable source
 
 For a lost or retired source with independently enforced retirement, continue at [Prepare independent target access](#3-prepare-independent-target-access-storage-and-credentials). Otherwise, exclude concurrent Helm and manual backup operations during handover.
 
-The source is still selected. Suspend schedules and withdraw access, then stop Keycloak:
+The source is still selected. For a v1alpha2 source, suspend schedules/withdraw access using its durable static CR settings, then reduce only Keycloak:
 
 ```bash
-yq -i '
-  .operations.deployments[strenv(DEPLOYMENT)].backupSuspend = true |
-  .operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = false |
-  .operations.deployments[strenv(DEPLOYMENT)].replicas = 0
-' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak --type=merge \
+  -p '{"spec":{"backup":{"suspend":true},"ingress":{"enabled":false},"application":{"replicas":0}}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status deployment/keycloak --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete ingress/keycloak --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status statefulset/keycloak-db --timeout=5m
 ```
 
-Confirm graceful drain, `Quiescent=True`, no remaining Keycloak process and failed public login. PostgreSQL must remain ready for final capture. Resolve uncertain Jobs first; do not force-delete Pods to pass this check.
+For a pre-v1alpha2 source, the patch above uses only its already supported replica/ingress/backup fields; do not send it `spec.running`. With released 0.8.0, Keycloak-only zero may report its historical Stopped condition; still require Quiescent, no Keycloak/worker processes and ready PostgreSQL. Keep its exact retained package/API unchanged; its [release-specific instructions](https://github.com/bartlapp/bartl-keycloak/blob/v0.8.0/README.md) remain authoritative. Target reconstruction uses backup data, never source Kubernetes state.
+
+Confirm graceful drain, current-generation `Quiescent=True`, no Keycloak process or unresolved native Job and failed public login, including previously established connections. PostgreSQL must remain ready and `spec.running` true on v1alpha2 for final capture. Whole-application Stopped is deliberately not the condition at this stage. Resolve uncertain Jobs first; do not force-delete Pods to pass.
 
 ```bash
 FINAL="keycloak-final-$(date -u +%Y%m%d%H%M%S)"
@@ -182,7 +185,19 @@ jq -e '.snapshotID | test("^[a-f0-9]{64}$")' "$SOURCE_DIR/backup-result.json"
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc -o json > "$SOURCE_DIR/source-pvc.json"
 ```
 
-After a verified final backup and completed Jobs, stop the source controller before PostgreSQL. A failed final backup blocks replacement:
+After a verified final backup and completed Jobs, stop the **whole v1alpha2 source** and retain durable stop intent:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
+  --type=merge -p '{"spec":{"running":false}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs,ingresses
+kubectl --context "$KUBE_CONTEXT" -n "$NS" scale deployment/keycloak-controller --replicas=0
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete pod \
+  -l app.kubernetes.io/name=keycloak-controller --timeout=5m
+```
+
+For a pre-v1alpha2 source, use **only** this branch after its final verified capture, not the `spec.running` patch above:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" scale deployment/keycloak-controller --replicas=0
@@ -190,10 +205,12 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete pod \
   -l app.kubernetes.io/name=keycloak-controller --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" scale statefulset/keycloak-db --replicas=0
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete pod/keycloak-db-0 --timeout=5m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs,ingresses
 ```
 
-Keep the source stopped and its PVC intact; disable automation that could restart it. Record retirement and the active generation in the installation's operating record.
+Keep the original API/package unchanged and record those release-specific observations.
+
+Require no source component or native worker still running. Keep source PVCs intact and all restart automation disabled. Retain the source context/API/namespace, CR UID, PVC/PV identities, final snapshot and confirmed retirement with the intended active deployment in the installation's operating record. This record supports resumption; the stopped processes and excluded restart paths enforce retirement.
 
 #### 3. Prepare independent target access, storage and credentials
 
@@ -239,6 +256,8 @@ KC_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTAL
 TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/connections.yaml")
 INGRESS_NAMESPACE=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.controllerNamespace' "$INSTALL_DIR/connections.yaml")
 ```
+
+Before any controller executes, inspect the target namespace for **all** egress policies. The package's Keycloak policy must remain the only egress grant selecting Keycloak; policies combine by union. Supplied clusters must provide enforced NetworkPolicy, CoreDNS's documented `kube-system`/`k8s-app=kube-dns` labels, and no host-network or admission mutation bypass. Otherwise stop and establish those prerequisites.
 
 Use a different source/target cluster-namespace tuple and empty target storage. Do not copy PVC annotations, application status or database-binding metadata. Keep database names and the recovered administrator; generate new database passwords:
 
@@ -319,8 +338,13 @@ Check authoritative `aa` answers for the target address, then public resolution 
 ```bash
 dig @1.1.1.1 +short "$KC_HOST" A
 dig @8.8.8.8 +short "$KC_HOST" A
-helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 30m
+```
+
+Create the target CR with explicitly selected **new** intent before controller execution. Do not copy the source CR or its stopped settings. Follow [Select initial runtime intent before controller execution](README.md#select-initial-runtime-intent-before-controller-execution), choosing `INITIAL_RUNNING=true INITIAL_REPLICAS=1`; its native `create` rejects an occupied CR. Keep the selected target's static ingress disabled, maintenance true and schedules suspended as recorded above, then run its Helm install command.
+
+Continue after Helm installation:
+
+```bash
 if yq -e '.services[strenv(INSTANCE)].endpoints.https.tlsManaged' "$INSTALL_DIR/connections.yaml" >/dev/null; then
   kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "certificate/$TLS_SECRET" --for=condition=Ready --timeout=600s
 fi
@@ -355,7 +379,31 @@ jq -e --arg issuer "$KC_URL/realms/master" '.issuer == $issuer' "$INSTALL_DIR/re
 
 The HTTPS probe allows the ingress controller to apply the new route after application reconciliation. It still requires trusted TLS and HTTP success; persistent failure blocks acceptance.
 
-Require current-generation Ready, trusted TLS and unchanged issuer. From the allowed address, log in with the retained administrator in a fresh browser session. From an independent ordinary address, verify that ordinary login and administration are denied. Check restored realm/client/user IDs and the agreed login behavior, including MFA/OIDC/PKCE where configured. Keep production outbound effects isolated; allow only dependencies needed for the test.
+Require current-generation Ready, trusted TLS and unchanged issuer. From the allowed address, log in with the retained administrator in a fresh browser session. From an independent ordinary address, verify ordinary login and administration denial, also with forged forwarding headers. Check restored realm/client/user IDs and agreed login behavior including MFA/OIDC/PKCE where configured. Check ClusterIP-only service exposure, no alternate Ingress/NodePort path and denied direct Pod/Service access from the independent client.
+
+Inspect outbound isolation using native resources:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get networkpolicy -o yaml
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get service/keycloak -o json | jq -e '.spec.type == "ClusterIP"'
+kubectl --context "$KUBE_CONTEXT" get ingress --all-namespaces -o wide
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods -l app.kubernetes.io/name=keycloak -o wide
+```
+
+Check the Keycloak egress rules: only its own database on 5432, peers on 7800/57800 and cluster DNS on TCP/UDP 53 may be allowed. Check every other policy that selects these Pods; any broader egress grant blocks acceptance until its owner removes it. Use a known reachable production SMTP/LDAP/custom-listener endpoint from the installation's dependency inventory for an enforced-denial probe; choose its actual host/port once:
+
+```bash
+export EFFECT_HOST=smtp.example.net EFFECT_PORT=587
+KC_POD=$(kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods \
+  -l app.kubernetes.io/name=keycloak -o jsonpath='{.items[0].metadata.name}')
+if kubectl --context "$KUBE_CONTEXT" -n "$NS" exec "$KC_POD" -c keycloak -- \
+  /bin/bash -c 'timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2"' bash "$EFFECT_HOST" "$EFFECT_PORT"; then
+  printf 'Outbound isolation failed; do not activate\n' >&2
+  exit 1
+fi
+```
+
+Confirm that the failure is timeout/denial, not absent shell tooling or failed DNS, and that this endpoint is reachable from the authorized independent client. Repeat for each distinct production effect path. No configured external effects means an empty dependency inventory, not permission to invent a test endpoint. This stock network-isolated profile does not support enabling SMTP/federation/custom outbound integrations: such a change requires a separately supported, scoped policy and qualification, not deletion of isolation at activation.
 
 Create an authorized disposable user in a restored realm, reopen its details to verify a new write/read, then remove it. Produce a new complete point from the recovered application:
 
@@ -373,7 +421,7 @@ Check the receipt for successful readback and target application/PVC identities 
 
 #### 6. Open service
 
-After standalone acceptance or the coordinator's activation decision, restore approved dependencies and open ordinary access and schedules:
+After standalone acceptance or the coordinator's activation decision, open ordinary access and schedules. Keep stock outbound isolation; no production egress policy is removed by this step.
 
 ```bash
 yq -i '
@@ -387,6 +435,22 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --f
 
 Verify current-generation Ready and normal client access. Record the active deployment, resolved package version, recovery time, selected point, storage identities and acceptance results in the installation record. Retain recovery-point identities and protected target inputs independently; the JSON/API output files used for these checks are disposable working files, not a permanent execution diary. Keep the source stopped until retention or destruction is authorized.
 
+#### Interrupted cutover and a returning source
+
+After any lost acknowledgement, do not infer which generation is active from DNS or a local receipt. Re-enter each reachable deployment's approved selector and inspect the live CR UID, `spec.running`, replica intent, ingress, component Pods and native Jobs; compare its recorded API and PVC/PV identities. Inspect authoritative DNS and actual allowed/denied HTTPS paths. Keep the old source stopped and its controller at zero. If target production writes/effects cannot be excluded, treat the target as potentially authoritative: keep the source retired, close the target's ingress through `kubectl patch keycloakapplication/keycloak --type=merge -p '{"spec":{"ingress":{"enabled":false}}}'`, and resolve actual state with the responsible operator before reopening either generation. No DNS reversal, automatic fallback or restore replay resolves ambiguous writes.
+
+A reachable returning v1alpha2 source is re-retired through its recorded context, without starting its controller or database first:
+
+```bash
+test "$(kubectl --context "$SOURCE_CONTEXT" config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = "$SOURCE_API"
+test "$(kubectl --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" get keycloakapplication/keycloak -o jsonpath='{.metadata.uid}')" = "$SOURCE_CR_UID"
+kubectl --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" patch keycloakapplication/keycloak \
+  --type=merge -p '{"spec":{"running":false,"ingress":{"enabled":false},"backup":{"suspend":true}}}'
+kubectl --context "$SOURCE_CONTEXT" -n "$SOURCE_NAMESPACE" get pods,jobs,ingresses
+```
+
+Its retained whole-stop intent must already exclude component/worker execution even if the host/controller returns. If any source execution or effect is observed, isolate its production dependency credentials/access through the already approved infrastructure/dependency interfaces and stop target activation until authority is resolved. For an older source, do not restart its controller: repeat the recorded controller-then-database retirement commands and keep all restart automation excluded. Without usable source access or independently prepared enforcement, stop activation and report the missing retirement capability; this runbook does not manufacture provider-loss authority.
+
 #### Failure and bounded return to the source
 
 On failed or ambiguous native work, keep the target isolated and retain diagnostics. Correct inputs and repeat on another independent empty target; do not replay the failed target. See [troubleshooting](README.md#troubleshooting-and-operations).
@@ -396,13 +460,8 @@ Return to the source only if its state remains untouched and the target produced
 For an authorized return, with the target still selected:
 
 ```bash
-yq -i '
-  .operations.deployments[strenv(DEPLOYMENT)].replicas = 0 |
-  .operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = false |
-  .operations.deployments[strenv(DEPLOYMENT)].backupSuspend = true
-' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
+  --type=merge -p '{"spec":{"running":false,"ingress":{"enabled":false},"backup":{"suspend":true}}}'
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait --for=delete ingress/keycloak --timeout=5m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
@@ -425,41 +484,30 @@ Explicitly enter the retained source deployment directory, not the example defau
 cd "$SOURCE_DIR"
 ```
 
-Wait for the next shell prompt. Require the restored source selector and independent cluster access, then acquire its recorded chart and render connections without changing directory again:
+Wait for the next shell prompt. Require the retained selector and independent cluster access; no chart acquisition is needed to return a v1alpha2 source:
 
 ```bash
-set -euo pipefail
 test "$DEPLOYMENT" = "$SOURCE_DEPLOYMENT"
-umask 077
-if [ ! -d "$CHART" ]; then
-  mkdir -p "$(dirname "$CHART")"
-  CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
-  helm pull "$CHART_REF" --version "$PACKAGE_VERSION" --untar --untardir "$CHART_STAGE"
-  mv "$CHART_STAGE/bartl-keycloak" "$CHART"
-  rm -r "$CHART_STAGE"
-fi
-helm template "$RELEASE" "$CHART" --namespace "$NS" -f "$VALUES" \
-  --set-string deployment="$DEPLOYMENT" --set-string renderMode=connections \
-  --show-only templates/connections.yaml > "$INSTALL_DIR/connections.yaml"
-KC_URL=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.url' "$INSTALL_DIR/connections.yaml")
-KC_HOST=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.hostname' "$INSTALL_DIR/connections.yaml")
-TLS_SECRET=$(yq -er '.credentials.bindings[strenv(INSTANCE)].tls.secretName' "$INSTALL_DIR/connections.yaml")
-INGRESS_NAMESPACE=$(yq -er '.services[strenv(INSTANCE)].endpoints.https.controllerNamespace' "$INSTALL_DIR/connections.yaml")
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
+kubectl --context "$KUBE_CONTEXT" -n "$NS" scale deployment/keycloak-controller --replicas=1
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status deployment/keycloak-controller --timeout=5m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak --type=merge \
+  -p '{"spec":{"running":true,"application":{"replicas":1},"ingress":{"enabled":true,"maintenance":true},"backup":{"suspend":true}}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
 
-Retain maintenance while restoring its run/routing intent:
+For an authorized pre-v1alpha2 source return, use this branch **instead of** the running-intent block above:
 
 ```bash
-yq -i '
-  .operations.deployments[strenv(DEPLOYMENT)].replicas = 1 |
-  .operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = true |
-  .operations.deployments[strenv(DEPLOYMENT)].maintenance = true |
-  .operations.deployments[strenv(DEPLOYMENT)].backupSuspend = true
-' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+test "$DEPLOYMENT" = "$SOURCE_DEPLOYMENT"
+kubectl --context "$KUBE_CONTEXT" -n "$NS" scale statefulset/keycloak-db --replicas=1
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status statefulset/keycloak-db --timeout=5m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak --type=merge \
+  -p '{"spec":{"application":{"replicas":1},"ingress":{"enabled":true,"maintenance":true},"backup":{"suspend":true}}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" scale deployment/keycloak-controller --replicas=1
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
+
+An incompatible source CRD remains on its original cluster.
 
 Return the hostname to the source ingress address if different. Verify trusted TLS, current-generation Ready and useful behavior under restriction before reopening access and schedules. A lost source without independent access is not a fallback.
 

@@ -135,15 +135,43 @@ func Backup(parent context.Context, output io.Writer) error {
 		}
 	}()
 
-	dir, err := os.MkdirTemp("", "bartl-keycloak-backup-")
-	if err != nil {
-		return errors.New("private backup temporary directory unavailable")
+	root := os.Getenv("BARTL_CAPTURE_DIRECTORY")
+	if root == "" || !filepath.IsAbs(root) {
+		return errors.New("backup requires its owned persistent capture directory")
 	}
-	defer os.RemoveAll(dir)
+	// The database lock excludes capture; this native file lock also protects
+	// retained bytes while a canceled child exits after losing its SQL session.
+	lock, err := os.OpenFile(filepath.Join(root, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return errors.New("capture storage lock unavailable")
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return errors.New("another worker still owns capture storage")
+	}
+	pending := filepath.Join(root, "pending")
+	dir := pending
+	retained := false
+	if _, err := os.Stat(pending); err == nil {
+		retained = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errors.New("retained capture observation failed")
+	} else {
+		dir, err = os.MkdirTemp(root, ".capture-")
+		if err != nil {
+			return errors.New("private capture storage unavailable")
+		}
+	}
+	complete := retained
+	defer func() {
+		if !complete {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	// Child environments are intentionally allowlisted: native connection/service
 	// overrides, alternate repository/password commands and proxy credentials must
 	// not redirect an operation away from its observed binding.
-	baseEnv := []string{"PATH=/usr/local/bin:/usr/lib/postgresql/17/bin:/usr/bin:/bin", "HOME=" + dir, "TMPDIR=" + dir}
+	baseEnv := []string{"PATH=/usr/local/bin:/usr/lib/postgresql/17/bin:/usr/bin:/bin", "HOME=" + root, "TMPDIR=" + root}
 	pgEnv := append(append([]string{}, baseEnv...), "PGPASSWORD="+credentials.Password)
 	resticEnv := append(append([]string{}, baseEnv...), "RESTIC_REPOSITORY="+repository, "RESTIC_PASSWORD="+os.Getenv("RESTIC_PASSWORD"), "RESTIC_REST_USERNAME="+os.Getenv("RESTIC_REST_USERNAME"), "RESTIC_REST_PASSWORD="+os.Getenv("RESTIC_REST_PASSWORD"))
 	if info, statErr := os.Stat("/repository-ca/ca.crt"); statErr == nil {
@@ -171,36 +199,58 @@ func Backup(parent context.Context, output io.Writer) error {
 	}
 	result.RepositoryID = repositoryConfig.ID
 
-	// Explicit libpq fields avoid interpreting database names as connection strings.
-	quote := func(s string) string { return "'" + strings.NewReplacer("\\", "\\\\", "'", "\\'").Replace(s) + "'" }
-	dsn := "host=" + quote(host) + " port=5432 user=" + quote(credentials.Username) + " dbname=" + quote(credentials.Database) + " sslmode=disable connect_timeout=5"
-	dumpPath := filepath.Join(dir, "keycloak.dump")
-	if err = runBackupCommand(backupCommand(ctx, dir, pgEnv, "pg_dump", "--format=custom", "--file="+dumpPath, "--dbname="+dsn, "--no-password"), io.Discard); err != nil {
-		return errors.New("native PostgreSQL capture failed or was interrupted")
-	}
-	if err = os.Chmod(dumpPath, 0600); err != nil {
-		return errors.New("native capture permissions could not be restricted")
-	}
-	if err = runBackupCommand(backupCommand(ctx, dir, baseEnv, "pg_restore", "--list", dumpPath), io.Discard); err != nil {
-		return errors.New("native PostgreSQL archive validation failed")
-	}
-	dump, err := os.Open(dumpPath)
-	if err != nil {
-		return errors.New("native capture unavailable for hashing")
-	}
+	var manifest captureManifest
+	var manifestBytes []byte
+	var size int64
 	hash := sha256.New()
-	size, hashErr := io.Copy(hash, &backupContextReader{Context: ctx, Reader: dump})
-	closeErr := dump.Close()
-	if hashErr != nil || closeErr != nil || size == 0 {
-		return errors.New("native capture hashing failed")
-	}
-	manifest := captureManifest{BackupResult: result, DatabaseBinding: binding, Database: credentials.Database, DatabaseUser: credentials.Username, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano), DumpFile: "keycloak.dump", DumpSHA256: hex.EncodeToString(hash.Sum(nil)), DumpBytes: size}
-	manifestBytes, err := json.Marshal(manifest)
-	if err != nil {
-		return errors.New("capture manifest encoding failed")
-	}
-	if err = os.WriteFile(filepath.Join(dir, "manifest.json"), manifestBytes, 0600); err != nil {
-		return errors.New("capture manifest could not be retained")
+	if retained {
+		manifest, manifestBytes, err = readRetainedCapture(ctx, dir, result, binding)
+		if err != nil {
+			return err
+		}
+		result = manifest.BackupResult
+		size = manifest.DumpBytes
+	} else {
+		// Explicit libpq fields avoid interpreting names as connection strings.
+		quote := func(s string) string { return "'" + strings.NewReplacer("\\", "\\\\", "'", "\\'").Replace(s) + "'" }
+		dsn := "host=" + quote(host) + " port=5432 user=" + quote(credentials.Username) + " dbname=" + quote(credentials.Database) + " sslmode=disable connect_timeout=5"
+		dumpPath := filepath.Join(dir, "keycloak.dump")
+		if err = runBackupCommand(backupCommand(ctx, dir, pgEnv, "pg_dump", "--format=custom", "--file="+dumpPath, "--dbname="+dsn, "--no-password"), io.Discard); err != nil {
+			return errors.New("native PostgreSQL capture failed or was interrupted")
+		}
+		if err = os.Chmod(dumpPath, 0600); err != nil {
+			return errors.New("native capture permissions could not be restricted")
+		}
+		if err = runBackupCommand(backupCommand(ctx, dir, baseEnv, "pg_restore", "--list", dumpPath), io.Discard); err != nil {
+			return errors.New("native PostgreSQL archive validation failed")
+		}
+		dump, err := os.OpenFile(dumpPath, os.O_RDWR, 0)
+		if err != nil {
+			return errors.New("native capture unavailable for hashing")
+		}
+		var hashErr error
+		size, hashErr = io.Copy(hash, &backupContextReader{Context: ctx, Reader: dump})
+		syncErr := dump.Sync()
+		closeErr := dump.Close()
+		if hashErr != nil || syncErr != nil || closeErr != nil || size == 0 {
+			return errors.New("native capture hashing or persistence failed")
+		}
+		manifest = captureManifest{BackupResult: result, DatabaseBinding: binding, Database: credentials.Database, DatabaseUser: credentials.Username, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano), DumpFile: "keycloak.dump", DumpSHA256: hex.EncodeToString(hash.Sum(nil)), DumpBytes: size}
+		manifestBytes, err = json.Marshal(manifest)
+		if err != nil {
+			return errors.New("capture manifest encoding failed")
+		}
+		if err = persistCaptureManifest(dir, manifestBytes); err != nil {
+			return err
+		}
+		if err = os.Rename(dir, pending); err != nil {
+			return errors.New("complete capture could not be retained")
+		}
+		complete = true
+		dir = pending
+		if err = syncCaptureDirectory(root); err != nil {
+			return err
+		}
 	}
 	cmd := restic("backup", "--host", result.Installation, "--tag", "installation="+result.Installation, "--tag", "instance="+result.Instance, "--tag", "operation="+result.OperationUID, "--", "keycloak.dump", "manifest.json")
 	pipe, err := cmd.StdoutPipe()
@@ -262,6 +312,23 @@ func Backup(parent context.Context, output io.Writer) error {
 	stopFinal()
 	if err != nil || ctx.Err() != nil {
 		return errors.New("backup exclusion session was lost before completion")
+	}
+	if err := os.RemoveAll(pending); err != nil {
+		return errors.New("verified capture could not be retired from staging")
+	}
+	if err := syncCaptureDirectory(root); err != nil {
+		return err
+	}
+	if retained {
+		// A retry publishes the preserved point first, then captures current data.
+		// In particular, a final-backup request must not report only an old point.
+		if err := conn.Close(ctx); err != nil {
+			return err
+		}
+		if err := lock.Close(); err != nil {
+			return err
+		}
+		return Backup(parent, output)
 	}
 	return json.NewEncoder(output).Encode(result)
 }

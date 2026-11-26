@@ -1,4 +1,4 @@
-package v1alpha1
+package v1alpha2
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -6,7 +6,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-var GroupVersion = schema.GroupVersion{Group: "keycloak.bartl.sh", Version: "v1alpha1"}
+var GroupVersion = schema.GroupVersion{Group: "keycloak.bartl.sh", Version: "v1alpha2"}
 
 func AddToScheme(s *runtime.Scheme) error {
 	s.AddKnownTypes(GroupVersion, &KeycloakApplication{}, &KeycloakApplicationList{})
@@ -47,6 +47,7 @@ type Backup struct {
 	Suspend      bool   `json:"suspend"`
 }
 type Spec struct {
+	Running              bool          `json:"running"`
 	Identity             Identity      `json:"identity"`
 	PackageRelease       string        `json:"packageRelease"`
 	Application          Application   `json:"application"`
@@ -87,6 +88,8 @@ type Operation struct {
 	Result              string            `json:"result"`
 }
 type Status struct {
+	Replicas           int32              `json:"replicas"`
+	Selector           string             `json:"selector"`
 	ObservedGeneration int64              `json:"observedGeneration"`
 	PackageRelease     string             `json:"packageRelease"`
 	State              State              `json:"state"`

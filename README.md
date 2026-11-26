@@ -2,7 +2,7 @@
 
 Keycloak over HTTPS with its own PostgreSQL database. The package initializes empty state, reconstructs from a configured backup and performs supported native migrations.
 
-These instructions target stable release [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0). Earlier packages retain their release-specific recovery behavior and inputs.
+This checkout implements the **unqualified v1alpha2 development candidate**, not a published release. Stable [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0) retains its release-specific API and instructions. The procedures below apply only to an exact v1alpha2 artifact supplied for qualification; do not apply them to 0.8.0. Publication and standalone qualification remain outstanding.
 
 - [Prerequisites](#prerequisites)
 - [Install a new deployment](#install-a-new-deployment)
@@ -46,7 +46,7 @@ umask 077
 
 ### Obtain the release
 
-Download the latest release into disposable staging and read its version. Helm's default latest selection excludes prereleases:
+For a published v1alpha2 release, download the latest stable chart into disposable staging and read its version. Until that release exists, qualification must supply its exact retained chart through `CHART_STAGE/bartl-keycloak`; the registry command below does not yet obtain this candidate. Helm's default latest selection excludes prereleases:
 
 ```bash
 mkdir -p "$WORK_DIR/packages"
@@ -72,6 +72,7 @@ export NS=keycloak-blue
 export RELEASE=keycloak
 export PACKAGE=keycloak
 
+yq -e '.deployments[strenv(DEPLOYMENT)] == null' "$VALUES" >/dev/null
 yq -e '.packages[strenv(PACKAGE)] == null or
   (.packages[strenv(PACKAGE)].version == strenv(PACKAGE_VERSION) and
    .packages[strenv(PACKAGE)].chart == "oci://ghcr.io/bartlapp/bartl-keycloak")' "$VALUES" >/dev/null
@@ -257,7 +258,32 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" create secret tls "$TLS_SECRET" \
   --cert="$INSTALL_DIR/tls/tls.crt" --key="$INSTALL_DIR/tls/tls.key"
 ```
 
-Install the chart:
+### Select initial runtime intent before controller execution
+
+Fresh installations default to running with one Keycloak replica. Select those choices explicitly here; for an initially stopped installation choose `INITIAL_RUNNING=false`. Install only the candidate CRD before creating the application. If an existing CRD does not serve the candidate's API/storage semantics, use a new target cluster; do not replace a predecessor's CRD or convert its objects.
+
+```bash
+export INITIAL_RUNNING=true INITIAL_REPLICAS=1
+if kubectl --context "$KUBE_CONTEXT" get crd keycloakapplications.keycloak.bartl.sh -o json > "$INSTALL_DIR/installed-crd.json"; then
+  jq -e 'any(.spec.versions[]; .name == "v1alpha2" and .served and .storage)' "$INSTALL_DIR/installed-crd.json"
+else
+  kubectl --context "$KUBE_CONTEXT" create -f "$CHART/crds/keycloakapplications.yaml"
+fi
+kubectl --context "$KUBE_CONTEXT" wait crd/keycloakapplications.keycloak.bartl.sh \
+  --for=condition=Established --timeout=60s
+helm template "$RELEASE" "$CHART" --namespace "$NS" -f "$VALUES" \
+  --set-string deployment="$DEPLOYMENT" --show-only templates/application.yaml |
+  yq '.metadata.namespace = strenv(NS) |
+    .metadata.annotations."meta.helm.sh/release-name" = strenv(RELEASE) |
+    .metadata.annotations."meta.helm.sh/release-namespace" = strenv(NS) |
+    .spec.running = (strenv(INITIAL_RUNNING) == "true") |
+    .spec.application.replicas = (strenv(INITIAL_REPLICAS) | tonumber)' |
+  kubectl --context "$KUBE_CONTEXT" create -f -
+```
+
+`kubectl create` rejects an occupied target; never replace it with apply. The static Helm manifest omits both runtime fields, and Helm's ownership metadata permits installing the static release without resetting the selected intent. Check the installed CRD against the target chart and every remaining controller, not merely the version name. A failed API lookup is not evidence of CRD absence: if the `create` fails, resolve that error before proceeding.
+
+Install the chart without rewriting the precreated runtime intent:
 
 ```bash
 helm install "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
@@ -266,14 +292,16 @@ if yq -e '.services[strenv(INSTANCE)].endpoints.https.tlsManaged' "$INSTALL_DIR/
   kubectl --context "$KUBE_CONTEXT" -n "$NS" wait "certificate/$TLS_SECRET" \
     --for=condition=Ready --timeout=600s
 fi
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o json | \
-  jq -e '.metadata.generation as $g | .status.observedGeneration == $g and
-    any(.status.conditions[]; .type == "Ready" and .status == "True" and .observedGeneration == $g)'
+if [ "$INITIAL_RUNNING" = false ]; then
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+else
+  kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
+fi
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get deployments,statefulsets,pods
 ```
 
-The package performs database initialization, backup reconstruction when needed and native Keycloak migration internally. Do not run restore, realm import or migration commands by hand. Helm waits for controller infrastructure; current-generation `Ready=True` permits the HTTPS acceptance below. For a failed readiness check, inspect:
+The package performs initialization, reconstruction and native migration internally. Do not run restore, realm import or migration commands by hand. Helm waits for controller infrastructure. A deliberately stopped initial installation executes no application work; confirm no component/worker Pods, retain inputs and continue at native start when authorized. HTTPS acceptance below applies after enabled positive-replica intent reaches current-generation Ready. For a failed readiness check, inspect:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$NS" logs deployment/keycloak -c keycloak --tail=80
@@ -322,7 +350,7 @@ Context selection is complete. Status inspection, native restart and capture thr
 
 ### Prepare the recorded chart for Helm operations
 
-Starting condition: the deployment is selected through [Resume an existing deployment](#resume-an-existing-deployment). Use this preparation for configuration changes, persistent stop/start, backup setup and removal, not routine status, restart or capture.
+Starting condition: the deployment is selected through [Resume an existing deployment](#resume-an-existing-deployment). Use this preparation for deliberate static configuration changes, backup setup and removal, never ordinary stop/start/scale/status or component restart.
 
 Acquire the recorded chart only if its cache is absent, then render connections. A pull becomes visible in `CHART` only after successful extraction:
 
@@ -349,15 +377,15 @@ Continue with the selected operation.
 
 ### Apply changes to a running deployment
 
-Starting condition: a running, Ready deployment with no admitted capture or transition still executing. [Resume it](#resume-an-existing-deployment), edit the intended retained fields, then [prepare its recorded chart](#prepare-the-recorded-chart-for-helm-operations) to refresh connections. Preserve the current run and routing intent and apply:
+This is same-release static configuration, not a package upgrade. [Resume the deployment](#resume-an-existing-deployment), edit only static fields, then [prepare its recorded chart](#prepare-the-recorded-chart-for-helm-operations). The chart omits runtime intent; an intentional stop and selected replica count remain owned by the CR.
 
 ```bash
 helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
   --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 ```
 
-Use the dedicated stop, replacement and upgrade procedures for those operations. This does not cancel already admitted work or authorize a native version transition.
+For enabled serving intent, require current-generation Ready and useful behavior. For intentional whole-application stop, require current-generation Stopped instead. Do not wait for Ready on a stopped application. Package changes use [replacement](RECOVERY.md), never in-place upgrade.
 
 ### Restart Keycloak
 
@@ -373,30 +401,52 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o j
 
 Verify a fresh login and existing realms, clients and users. Normal restart uses existing database state without backup access or session reset.
 
-### Persistently stop and start Keycloak
+### Restart PostgreSQL independently
 
-[Resume the deployment](#resume-an-existing-deployment) and [prepare its recorded chart](#prepare-the-recorded-chart-for-helm-operations). Set persistent stop intent; scaling the workload alone is undone by the controller:
-
-```bash
-yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 0' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
-kubectl --context "$KUBE_CONTEXT" -n "$NS" get deployments,statefulsets,pods
-```
-
-Require no Keycloak process, including startup work; a fresh login must fail. PostgreSQL and the controller remain available. `Stopped` does not imply `Quiescent`: inspect outstanding Jobs before another state-changing operation.
-
-Start again:
+With the application enabled and PostgreSQL running:
 
 ```bash
-yq -i '.operations.deployments[strenv(DEPLOYMENT)].replicas = 1' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout restart statefulset/keycloak-db
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status statefulset/keycloak-db --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Ready --timeout=10m
 ```
 
-Verify a fresh login and retained data. Changing replicas does not clear a failed or ambiguous transition.
+Do not restart Keycloak or the controller as part of this operation. Verify login and retained state after native database reconnection. A rollout restart while stopped only changes the template; it must not create Pods or change `spec.running`.
+
+### Persistently stop and start Keycloak
+
+[Resume the deployment](#resume-an-existing-deployment); no chart or local values changes are needed. Stop the **whole application**, preserving its selected replica count:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
+  --type=merge -p '{"spec":{"running":false}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get deployments,statefulsets,pods,jobs,cronjobs,ingresses
+```
+
+Require current-generation Stopped, no dedicated Keycloak or PostgreSQL Pods, no executing owned Jobs and withdrawn application ingress. The controller stays available. Unconfirmed termination, unavailable observations or unresolved work do not establish stop; do not force-delete Pods to claim it.
+
+Start again without resetting replicas:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
+  --type=merge -p '{"spec":{"running":true}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
+```
+
+For a positive replica count, wait for current-generation Ready and verify login/retained data. With zero replicas, PostgreSQL starts but Keycloak stays at zero. Running intent does not clear a failed or ambiguous transition.
+
+### Scale only Keycloak
+
+```bash
+kubectl --context "$KUBE_CONTEXT" -n "$NS" scale keycloakapplication/keycloak --replicas=0
+kubectl --context "$KUBE_CONTEXT" -n "$NS" rollout status deployment/keycloak --timeout=10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
+kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
+```
+
+When `spec.running` remains true, verify zero Keycloak processes and ready PostgreSQL. This is not whole-application Stopped; it permits database capture after native work has drained. Restore a selected count with `kubectl scale keycloakapplication/keycloak --replicas=1`, then wait for Ready and verify login. Scaling while whole-application stopped changes the retained count but cannot start any component. Scaling the generated Deployment is not durable intent.
 
 ## Enable backups and trigger one now
 
@@ -448,11 +498,11 @@ jq -e '.snapshotID | test("^[a-f0-9]{64}$")' "$INSTALL_DIR/backup-result.json"
 
 Check Job success and the final JSON receipt for the installation, application/PVC/execution, database, repository, full snapshot and package/images. Success includes dump validation and readback of that published point.
 
-Defaults are daily `0 2 * * *` in `UTC`. Existing schedule and suspension settings remain authoritative. `operations.deployments.<deployment>.backupSuspend: true` stops schedules, not manual or admitted Jobs. `services.<instance>.backup.enabled: false` removes the schedule, not admitted work.
+Defaults are daily `0 2 * * *` in `UTC`. `services.<instance>.backup.suspend: true` stops schedules, not admitted Jobs. `backup.enabled: false` removes the schedule, not admitted work. Whole-application stopped intent prevents capture admission and never wakes the database for backup. Capture with Keycloak at zero requires `spec.running: true`.
 
 The worker deadline is 25 minutes and Job deadline 30 minutes, without automatic replay. A client timeout does not cancel execution. Inspect failed Jobs and logs before another operation; interrupted publication is not a completed backup. Never unlock until its execution is known to have ended.
 
-Backup failure does not stop a healthy application. Monitoring, capacity, independent replication, retention and destructive maintenance belong to the backup operator.
+Backup failure does not stop a healthy application. A complete capture whose publication failed remains on the dedicated `keycloak-capture` PVC. The next admitted backup first publishes retained complete work, then captures current database state; its successful receipt confirms current capture, not merely an old retry. Capacity derives from `database.size`; include database storage plus temporary capture/Restic workspace in planning. Stop/uninstall preserves both claims. Monitoring, independent replication, retention and destructive maintenance belong to the backup operator.
 
 ## Recover or replace a deployment
 
@@ -460,7 +510,7 @@ Follow the [recovery and replacement runbook](RECOVERY.md) for reconstruction on
 
 Recovery preserves native Keycloak session behavior; it does not force logout or advance realm revocation cutoffs. Authentication and authorization state comes from the selected backup, so later session revocations, password changes, account disablements and permission changes may be lost. For security-incident recovery, reconcile affected identities and access before opening service. Private startup, verified reconstruction and source retirement remain required.
 
-On a shared cluster, every remaining controller must support the installed CRD. Helm 4.3.2's server-side-apply install can update the cluster-wide definition; a new namespace does not isolate that change. Check source/target CRD compatibility before replacement. Historical release inputs remain governed by their release instructions, not an automatic conversion step here.
+On a shared cluster, every remaining controller must support the installed CRD. A pre-v1alpha2 CRD requires a **new target cluster** for this replacement path: no conversion, adoption or old management-state migration is supplied. A namespace does not isolate the cluster-wide schema.
 
 ## Troubleshooting and operations
 
@@ -474,7 +524,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$NS" logs statefulset/keycloak-db --tail=8
 kubectl --context "$KUBE_CONTEXT" -n "$NS" logs deployment/keycloak -c keycloak --tail=80
 ```
 
-Check `status.operation`, current-generation conditions and Job logs (`-c recovery` or `-c backup`). `status.observedGeneration` means examined, not achieved; the condition must be true for the current `metadata.generation`. `Ready` covers intended running/access, `Stopped` excludes Keycloak processes, and `Quiescent` excludes executing or unresolved native work.
+Check `status.operation`, current-generation conditions and Job logs (`-c recovery` or `-c backup`). `status.observedGeneration` means examined, not achieved; the condition must be true for the current `metadata.generation`. `Ready` covers intended running/access, `Stopped` confirms the complete owned application has stopped, and `Quiescent` describes the native-work boundary. Keycloak-only zero replicas must not be reported as whole-application Stopped.
 
 A client timeout does not cancel work. Failed transitions remain isolated across restarts; do not clear failed-state markers or roll software back to force progress. Keep diagnostics and verified inputs, then recover on independent empty storage.
 
@@ -486,21 +536,17 @@ For pending certificates check DNS, port 80 and cert-manager events. For mainten
 
 ### Stop application work
 
-Set stop intent, disable ingress and suspend schedules:
+Set whole-application stop intent and keep the controller available until drainage completes:
 
 ```bash
-yq -i '
-  .operations.deployments[strenv(DEPLOYMENT)].replicas = 0 |
-  .operations.deployments[strenv(DEPLOYMENT)].ingressEnabled = false |
-  .operations.deployments[strenv(DEPLOYMENT)].backupSuspend = true
-' "$VALUES"
-helm upgrade "$RELEASE" "$CHART" --kube-context "$KUBE_CONTEXT" -n "$NS" \
-  --reset-values -f "$VALUES" --set-string deployment="$DEPLOYMENT" --wait=legacy --timeout 10m
+kubectl --context "$KUBE_CONTEXT" -n "$NS" patch keycloakapplication/keycloak \
+  --type=merge -p '{"spec":{"running":false}}'
+kubectl --context "$KUBE_CONTEXT" -n "$NS" wait keycloakapplication/keycloak --for=condition=Stopped --timeout=10m
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get keycloakapplication/keycloak -o yaml
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pods,jobs
 ```
 
-Require current-generation `Stopped` and `Quiescent`, and no executing or unresolved native work in Jobs/Pods. Keep finalization machinery available until this is established.
+Require current-generation Stopped, no dedicated component Pods and no executing or unresolved native work. Keep finalization machinery available until this is established.
 
 ### Uninstall the deployment
 
@@ -511,7 +557,7 @@ helm uninstall "$RELEASE" --kube-context "$KUBE_CONTEXT" -n "$NS" --wait --timeo
 kubectl --context "$KUBE_CONTEXT" -n "$NS" get pvc,secrets
 ```
 
-Uninstall retains the database PVC and shared CRD. A new CR cannot automatically adopt the retained database; uninstall is not a reinstall procedure. Delete identified data/Secrets only under the retention decision. Namespace deletion destroys retained PVCs and Secrets. Do not delete the shared CRD as application cleanup.
+Uninstall retains `keycloak-db`, `keycloak-capture` and the shared CRD. A new CR cannot adopt their prior binding; uninstall is not reinstall. Delete identified data/PVCs or Secrets only under the retention decision, including complete captures awaiting publication. Namespace deletion destroys retained PVCs and Secrets. Do not delete the shared CRD as application cleanup.
 
 ### DNS and infrastructure cleanup
 
@@ -521,13 +567,12 @@ Application removal leaves the cluster and its charges intact. For authorized cl
 
 ## Helm inputs and connections
 
-The complete package interface is [interface.schema.json](chart/interface.schema.json), with runtime configuration defaults in [the chart helpers](chart/templates/_helpers.tpl). Omission restores defaults/derivation, maps merge by key, lists replace, and explicit false/zero remain effective. Unknown fields under the selected service fail; unrelated services and resource metadata remain untouched.
+The complete static package interface is [interface.schema.json](chart/interface.schema.json), with static defaults in [the chart helpers](chart/templates/_helpers.tpl). Omission restores static defaults/derivation, maps merge by key, lists replace, and explicit false remains effective. Unknown fields under the selected service fail; unrelated services and resource metadata remain untouched. Runtime `spec.running` (creation default true) and `spec.application.replicas` (creation default 1) belong only to the v1alpha2 CR, never Helm values.
 
 | Input under `services.<instance>` | Default or purpose |
 | --- | --- |
 | `hostname`, `realm` | `login.<dns.root>`; installation ID for advertised realm/issuer, not automatic realm creation |
 | `release` | Optional assertion that the service uses the selected chart version |
-| `application.replicas` | `1`; `0` persistently stops Keycloak |
 | `database.size` | `5Gi` on default storage class |
 | `database.secretName`, `database.adminSecretName` | `keycloak-database`, `keycloak-database-admin` |
 | `bootstrapAdminSecret` | `keycloak-bootstrap`; fresh initialization only |
@@ -540,7 +585,7 @@ The complete package interface is [interface.schema.json](chart/interface.schema
 | `backup.readerSecret`, `backup.writerSecret` | `keycloak-backup-reader`, `keycloak-backup-writer` |
 | `backup.schedule`, `backup.timeZone`, `backup.suspend` | `0 2 * * *`, `UTC`, `false` |
 
-`deployment` selects placement, instance and package from the installation record and checks the Helm namespace/release and chart version. `operations.deployments.<deployment>` overrides `replicas`, `ingressEnabled`, `maintenance` and `backupSuspend`; omitted fields inherit service settings.
+`deployment` selects placement, instance and package from the installation record and checks the Helm namespace/release and chart version. Deployment-specific static overrides may select `ingressEnabled`, `maintenance` and `backupSuspend`; neither service values nor `operations.deployments.<deployment>` may set running or replicas.
 
 Independent chart consumers may omit `deployment` and select `instance` (default `keycloak`) directly, without deployment/package maps; an explicit instance must not conflict with a selected deployment. The supported Helm release remains `keycloak`, one per namespace. IDs are alphanumeric followed by alphanumerics, `.`, `_` or `-`, at most 128 characters.
 

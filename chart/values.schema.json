@@ -3,7 +3,7 @@
   "type": "object",
   "additionalProperties": true,
   "required": ["installation", "renderMode", "services"],
-  "$comment": "Selected deployment, package, intent, services.<instance> and resolved.backup.bindings.<instance> are validated by keycloak.validate against interface.schema.json; unrelated entries are not Keycloak inputs.",
+  "$comment": "Selected deployment, package, static overrides, services.<instance> and resolved.backup.bindings.<instance> are validated by keycloak.validate against interface.schema.json; runtime intent belongs only to the application CR.",
   "properties": {
     "installation": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
     "instance": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"},
@@ -14,6 +14,8 @@
     "identity": false,
     "configuration": false,
     "application": false,
+    "running": false,
+    "replicas": false,
     "database": false,
     "bootstrapAdminSecret": false,
     "ingress": false,

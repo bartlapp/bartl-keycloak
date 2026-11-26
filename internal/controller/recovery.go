@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"strings"
 
-	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha2"
 	"github.com/floriankesslergmbh/bartl-keycloak/internal/native"
 	"github.com/jackc/pgx/v5"
 	appsv1 "k8s.io/api/apps/v1"
@@ -76,6 +76,9 @@ func (r *Reconciler) recovery(ctx context.Context, a *api.KeycloakApplication, p
 	fail := func(reason string, cause error) (bool, ctrl.Result, error) {
 		if err := r.annotateRecovery(ctx, pvc, startupFailureAnnotation, reason+": "+cause.Error()); err != nil {
 			return true, ctrl.Result{}, err
+		}
+		if a.Status.Operation != nil {
+			a.Status.Operation.Result = "Failed"
 		}
 		if exists {
 			if err := r.scale(ctx, dep, 0); err != nil {
@@ -224,6 +227,9 @@ func (r *Reconciler) recoveryJob(ctx context.Context, a *api.KeycloakApplication
 		if err != nil {
 			return nil, err
 		}
+		if err = r.authority(ctx, a); err != nil {
+			return nil, err
+		}
 		if err = controllerutil.SetControllerReference(a, job, r.Scheme); err != nil {
 			return nil, err
 		}
@@ -254,7 +260,7 @@ func (r *Reconciler) recoveredStartup(ctx context.Context, a *api.KeycloakApplic
 	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), latest); err != nil {
 		return true, ctrl.Result{}, err
 	}
-	if latest.Generation != a.Generation || latest.Spec.Application.Replicas == 0 {
+	if latest.Generation != a.Generation || !latest.Spec.Running || latest.Spec.Application.Replicas == 0 {
 		if exists {
 			if err := r.scale(ctx, dep, 0); err != nil {
 				return true, ctrl.Result{}, err
@@ -306,7 +312,7 @@ func (r *Reconciler) recoveredStartup(ctx context.Context, a *api.KeycloakApplic
 			if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), latest); err != nil {
 				return true, ctrl.Result{}, err
 			}
-			if latest.Generation != a.Generation || latest.Spec.Application.Replicas == 0 {
+			if latest.Generation != a.Generation || !latest.Spec.Running || latest.Spec.Application.Replicas == 0 {
 				if err := r.scale(ctx, dep, 0); err != nil {
 					return true, ctrl.Result{}, err
 				}
@@ -331,7 +337,7 @@ func (r *Reconciler) recoveredStartup(ctx context.Context, a *api.KeycloakApplic
 	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(a), latest); err != nil {
 		return true, ctrl.Result{}, err
 	}
-	if latest.Generation != a.Generation || latest.Spec.Application.Replicas == 0 {
+	if latest.Generation != a.Generation || !latest.Spec.Running || latest.Spec.Application.Replicas == 0 {
 		if exists {
 			if err := r.scale(ctx, dep, 0); err != nil {
 				return true, ctrl.Result{}, err
@@ -339,7 +345,7 @@ func (r *Reconciler) recoveredStartup(ctx context.Context, a *api.KeycloakApplic
 		}
 		return true, ctrl.Result{}, nil
 	}
-	if err := r.application(ctx, a, binding, false, true, false); err != nil {
+	if err := r.application(ctx, a, binding, false, true); err != nil {
 		return fail("RecoveryStartupRefused", err)
 	}
 	result, err := r.report(ctx, a, "Restored", "RecoveryStarting", "One exclusive native startup admitted; routing remains withheld until native verification", false, false, true, false)

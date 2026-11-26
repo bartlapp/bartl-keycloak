@@ -4,10 +4,13 @@
 {{- end }}
 {{- $service := include "keycloak.service" . | fromYaml }}
 {{- $backup := include "keycloak.backup" (dict "root" . "service" $service) | fromYaml }}
-apiVersion: keycloak.bartl.sh/v1alpha1
+apiVersion: keycloak.bartl.sh/v1alpha2
 kind: KeycloakApplication
 metadata:
   name: keycloak
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:
@@ -17,8 +20,6 @@ spec:
   packageRelease: {{ .Chart.Version | quote }}
   configuration:
     hostname: {{ include "keycloak.hostname" $service | quote }}
-  application:
-    {{- toYaml $service.application | nindent 4 }}
   database:
     {{- toYaml $service.database | nindent 4 }}
   {{- with $service.bootstrapAdminSecret }}

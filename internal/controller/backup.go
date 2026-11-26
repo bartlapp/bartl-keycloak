@@ -7,9 +7,11 @@ import (
 	"strings"
 	"time"
 
-	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha1"
+	api "github.com/floriankesslergmbh/bartl-keycloak/api/v1alpha2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,6 +42,9 @@ func (r *Reconciler) backup(ctx context.Context, a *api.KeycloakApplication, pvc
 	if _, err := time.LoadLocation(b.TimeZone); err != nil {
 		return errors.New("invalid backup timeZone")
 	}
+	if err := r.captureStorage(ctx, a, binding); err != nil {
+		return err
+	}
 	field := func(name, path string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: path}}}
 	}
@@ -63,6 +68,7 @@ func (r *Reconciler) backup(ctx context.Context, a *api.KeycloakApplication, pvc
 		secretEnv("RESTIC_REST_USERNAME", b.WriterSecret, "username", false),
 		secretEnv("RESTIC_REST_PASSWORD", b.WriterSecret, "restPassword", false),
 		{Name: "HOME", Value: "/tmp"},
+		{Name: "BARTL_CAPTURE_DIRECTORY", Value: "/capture"},
 	}
 	c := &batchv1.CronJob{ObjectMeta: metadata(a, "keycloak-backup")}
 	return r.apply(ctx, a, c, func() error {
@@ -81,12 +87,43 @@ func (r *Reconciler) backup(ctx context.Context, a *api.KeycloakApplication, pvc
 					SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr(true), RunAsUser: ptr(int64(65532)), RunAsGroup: ptr(int64(65532)), FSGroup: ptr(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 					Containers: []corev1.Container{{Name: "backup", Image: r.BackupImage, ImagePullPolicy: corev1.PullIfNotPresent, Command: []string{"/backup"}, Env: env,
 						SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr(false), ReadOnlyRootFilesystem: ptr(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
-						VolumeMounts:    []corev1.VolumeMount{{Name: "tmp", MountPath: "/tmp"}, {Name: "repository-ca", MountPath: "/repository-ca", ReadOnly: true}},
+						VolumeMounts:    []corev1.VolumeMount{{Name: "tmp", MountPath: "/tmp"}, {Name: "capture", MountPath: "/capture"}, {Name: "repository-ca", MountPath: "/repository-ca", ReadOnly: true}},
 					}},
-					Volumes: []corev1.Volume{{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "repository-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: b.WriterSecret, Optional: ptr(true), Items: []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}}}}}},
+					Volumes: []corev1.Volume{{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "capture", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "keycloak-capture"}}}, {Name: "repository-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: b.WriterSecret, Optional: ptr(true), Items: []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}}}}}},
 				}},
 			}},
 		}
 		return nil
 	})
+}
+
+// Completed captures outlive worker failure, application stop and uninstall.
+// The spool is bound to this target, not adopted by a replacement CR.
+func (r *Reconciler) captureStorage(ctx context.Context, a *api.KeycloakApplication, binding string) error {
+	size, err := resource.ParseQuantity(a.Spec.Database.Size)
+	if err != nil || size.Sign() <= 0 {
+		return errors.New("database.size must be a positive Kubernetes quantity")
+	}
+	pvc := &corev1.PersistentVolumeClaim{}
+	err = r.Reader.Get(ctx, types.NamespacedName{Namespace: a.Namespace, Name: "keycloak-capture"}, pvc)
+	if err == nil {
+		if pvc.Labels[ownerLabel] != string(a.UID) || pvc.Annotations[bindingAnnotation] != binding {
+			return errors.New("retained capture PVC binding differs; automatic adoption is forbidden")
+		}
+		requested := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		if requested.Cmp(size) != 0 {
+			return errors.New("capture storage size change is not supported")
+		}
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := r.authority(ctx, a); err != nil {
+		return err
+	}
+	pvc = &corev1.PersistentVolumeClaim{ObjectMeta: metadata(a, "keycloak-capture"), Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: size}}}}
+	pvc.Labels = labels(a, "keycloak-backup")
+	pvc.Annotations = map[string]string{bindingAnnotation: binding}
+	return r.Create(ctx, pvc)
 }

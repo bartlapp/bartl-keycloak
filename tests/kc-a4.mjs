@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Runs only against explicitly retained disposable kc-a4-* namespaces.
 import {readFile, writeFile, mkdir} from 'node:fs/promises';
-import {readFileSync, writeFileSync} from 'node:fs';
 import {execFileSync, spawn} from 'node:child_process';
 import {randomBytes, createHash, createPublicKey, verify} from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -11,7 +10,7 @@ const state = path.resolve(process.env.KC_A4_STATE || '.lab/kc-a4');
 const cfg = JSON.parse(await readFile(path.join(state, 'runtime.json')));
 const secrets = JSON.parse(await readFile(path.join(state, 'credentials.json')));
 const ca = await readFile(path.join(state, 'repository.crt'), 'utf8');
-// The retained source fixture belongs to the published pre-0.6 package.
+// Source fixture uses this exact candidate API; historical migrations live in A5.
 const sourceValues = JSON.parse(await readFile(path.join(state, 'source-values.json')));
 const source = 'kc-a4-source';
 const base = sourceValues.configuration.hostname;
@@ -38,40 +37,42 @@ async function until(label, observe, accept, seconds=600) {
   throw Error(label+' timed out: '+JSON.stringify(last));
 }
 const ready = ns => until(ns+' Ready',()=>app(ns),a=>condition(a,'Ready'));
-const stopped = ns => until(ns+' Stopped',()=>app(ns),a=>condition(a,'Stopped'));
-const chartFor = ns => ns===source ? cfg.sourceChart : cfg.chart;
+const stopped = ns => until(ns+' whole application Stopped',()=>app(ns),a=>condition(a,'Stopped') && condition(a,'Quiescent'));
+const keycloakZero = ns => until(ns+' Keycloak zero with database running',()=>app(ns),a=>{
+  assert.equal(a.spec.running,true);
+  return a.status?.application?.activePods===0 && condition(a,'Quiescent') &&
+    !condition(a,'Stopped') && json('-n',ns,'get','statefulset/keycloak-db').status.readyReplicas===1;
+});
 const installationFile=ns=>path.join(state,scope(ns),'installation.yaml');
 function intent(ns, settings) {
-  scope(ns);
-  const args=['upgrade','keycloak',chartFor(ns),'--kubeconfig',cfg.kubeconfig,'-n',ns];
-  if(ns===source){
-    args.push('--reuse-values');
-    for(const [key,value] of Object.entries(settings))args.push('--set',key+'='+value);
-  }else{
-    const values=JSON.parse(readFileSync(installationFile(ns),'utf8')),service=values.services[values.instance];
-    for(const [key,value] of Object.entries(settings)){const parts=key.split('.');assert.equal(parts.length,2);service[parts[0]][parts[1]]=value}
-    writeFileSync(installationFile(ns),JSON.stringify(values,null,2)+'\n',{mode:0o600});
-    args.push('--reset-values','-f',installationFile(ns));
+  const spec={};
+  for(const [key,value] of Object.entries(settings)){
+    const parts=key.split('.');
+    if(key==='running'){spec.running=value;continue}
+    assert.equal(parts.length,2);
+    (spec[parts[0]]??={})[parts[1]]=value;
   }
-  args.push('--wait=legacy','--timeout','10m');
-  run('helm',args);
+  k('-n',scope(ns),'patch','keycloakapplication/keycloak','--type=merge','-p',JSON.stringify({spec}));
+}
+function staticApply(ns){
+  run('helm',['upgrade','keycloak',cfg.chart,'--kubeconfig',cfg.kubeconfig,'-n',scope(ns),
+    '--reset-values','-f',installationFile(ns),'--wait=legacy','--timeout','10m']);
 }
 const backupConfig = {repository,readerSecret:'keycloak-backup-reader',writerSecret:'keycloak-backup-writer',schedule:'0 2 * * *',timeZone:'Etc/UTC',suspend:true};
-async function install(ns,{backup=true,replicas=1,identity='kc-a4',instance='keycloak',route=false,readerPassword=secrets.reader,bootstrap=true,repo=repository}={}) {
+async function install(ns,{backup=true,replicas=1,running=true,identity='kc-a4',instance='keycloak',route=false,readerPassword=secrets.reader,bootstrap=true,repo=repository}={}) {
   scope(ns);
   const existing=json('get','namespaces').items;
   assert(!existing.some(n=>n.metadata.name===ns),'refusing to reuse an existing target namespace');
   const strings=[['keycloak-database',{username:'keycloak',database:'keycloak',password:randomBytes(24).toString('hex')}],['keycloak-database-admin',{username:'postgres',password:randomBytes(24).toString('hex')}],['keycloak-backup-reader',{password:secrets.restic,username:'reader',restPassword:readerPassword,'ca.crt':ca}],['keycloak-backup-writer',{password:secrets.restic,username:'writer',restPassword:secrets.writer,'ca.crt':ca}]];
   if(bootstrap)strings.push(['keycloak-bootstrap',{username:'admin',password:secrets.admin}]);
   apply([{apiVersion:'v1',kind:'Namespace',metadata:{name:ns,labels:{'kc-a4-lab':'true'}}}]);
-  const tls=json('-n',source,'get','secret/kc-a4-tls');
+  const tls=JSON.parse(await readFile(path.join(state,'tls.json')));
   const items=strings.map(([name,stringData])=>({apiVersion:'v1',kind:'Secret',metadata:{name,namespace:ns},stringData}));
   items.push({apiVersion:'v1',kind:'Secret',type:'kubernetes.io/tls',metadata:{name:'kc-a4-tls',namespace:ns},data:tls.data});
   apply(items);
   const service={
     hostname:new URL(base).hostname,
     tls:{managed:false},
-    application:{replicas},
     database:structuredClone(sourceValues.database),
     bootstrapAdminSecret:sourceValues.bootstrapAdminSecret,
     ingress:{...structuredClone(sourceValues.ingress),enabled:route},
@@ -80,6 +81,13 @@ async function install(ns,{backup=true,replicas=1,identity='kc-a4',instance='key
   const values={installation:identity,instance,services:{[instance]:service}};
   const directory=path.join(state,ns);await mkdir(directory,{recursive:true,mode:0o700});
   const file=installationFile(ns);await writeFile(file,JSON.stringify(values),{mode:0o600});
+  const manifest=run('helm',['template','keycloak',cfg.chart,'-n',ns,'-f',file,'--show-only','templates/application.yaml']);
+  const resource=JSON.parse(run('yq',['-o=json','.'],manifest));
+  resource.metadata.namespace=ns;
+  resource.spec.running=running;
+  resource.spec.application??={};
+  resource.spec.application.replicas=replicas;
+  run('kubectl',['--kubeconfig',cfg.kubeconfig,'create','-f','-'],JSON.stringify(resource));
   run('helm',['install','keycloak',cfg.chart,'--kubeconfig',cfg.kubeconfig,'-n',ns,'-f',file,'--wait=legacy','--timeout','10m']);
   return ns;
 }
@@ -126,9 +134,9 @@ async function oidc() {
 }
 async function activate(ns) {
   for(const resource of json('get','ingresses','-A').items)if(resource.spec.rules?.some(r=>r.host===new URL(base).hostname)) {
-    const owner=scope(resource.metadata.namespace);if(owner!==ns){intent(owner,{'application.replicas':0,'ingress.enabled':false,'backup.suspend':true});await stopped(owner)}
+    const owner=scope(resource.metadata.namespace);if(owner!==ns){intent(owner,{running:false,'ingress.enabled':false,'backup.suspend':true});await stopped(owner)}
   }
-  intent(ns,{'application.replicas':1,'ingress.enabled':true});await ready(ns);
+  intent(ns,{running:true,'application.replicas':1,'ingress.enabled':true});await ready(ns);
   await until('test route',async()=>{try{return (await fetch(base+'/realms/master/.well-known/openid-configuration')).status}catch{return 0}},x=>x===200,120);
 }
 async function assertRestored(ns, snapshot, firstName='Latest') {
@@ -137,12 +145,14 @@ async function assertRestored(ns, snapshot, firstName='Latest') {
   assert.equal(sql(ns,`SELECT id FROM user_entity WHERE username='recovery-user'`),fixture.userID);
   assert.equal(sql(ns,`SELECT first_name FROM user_entity WHERE id='${fixture.userID}'`),firstName);
   assert.equal(sql(ns,`SELECT id FROM realm WHERE name='${realm}'`),fixture.realmID);
-  const targetPVC=json('-n',ns,'get','pvc/keycloak-db'),sourcePVC=json('-n',source,'get','pvc/keycloak-db');
+  const targetPVC=json('-n',ns,'get','pvc/keycloak-db'),sourcePVC=JSON.parse(await readFile(path.join(state,'source-pvc.json')));
   assert.notEqual(targetPVC.metadata.uid,sourcePVC.metadata.uid);assert.notEqual(targetPVC.spec.volumeName,sourcePVC.spec.volumeName);
   return {applicationUID:a.metadata.uid,pvcUID:targetPVC.metadata.uid,volume:targetPVC.spec.volumeName,operation:a.status.operation};
 }
 async function sourceScenario() {
   await ready(source);
+  await save('tls.json',{data:json('-n',source,'get','secret/kc-a4-tls').data});
+  await save('source-pvc.json',json('-n',source,'get','pvc/keycloak-db'));
   await admin('POST','realms',{realm,enabled:true,registrationAllowed:false,resetPasswordAllowed:false,ssoSessionIdleTimeout:7200,ssoSessionMaxLifespan:7200});
   await admin('POST',`realms/${realm}/clients`,{clientId:'recovery-proof',enabled:true,publicClient:true,standardFlowEnabled:true,directAccessGrantsEnabled:true,redirectUris:[base+'/proof-callback'],attributes:{'pkce.code.challenge.method':'S256'}});
   await admin('POST',`realms/${realm}/users`,{username:'recovery-user',enabled:true,email:'recovery@example.invalid',firstName:'Older',lastName:'Proof',emailVerified:true,credentials:[{type:'password',value:secrets.user,temporary:false}]});
@@ -152,15 +162,16 @@ async function sourceScenario() {
   const offline=await token({grant_type:'password',client_id:'recovery-proof',username:'recovery-user',password:secrets.user,scope:'openid offline_access'});
   const offlineClaims=JSON.parse(Buffer.from(offline.refresh_token.split('.')[1],'base64url'));assert.equal(offlineClaims.typ,'Offline');
   await save('old-tokens.json',{online:online.tokens.refresh_token,offline:offline.refresh_token});
-  const file=path.join(state,'source-backup-values.json');await writeFile(file,JSON.stringify({backup:backupConfig}),{mode:0o600});
-  run('helm',['upgrade','keycloak',cfg.sourceChart,'--kubeconfig',cfg.kubeconfig,'-n',source,'--reuse-values','-f',file,'--wait=legacy','--timeout','10m']);
+  intent(source,{'backup.repository':repository,'backup.readerSecret':backupConfig.readerSecret,
+    'backup.writerSecret':backupConfig.writerSecret,'backup.schedule':backupConfig.schedule,
+    'backup.timeZone':backupConfig.timeZone,'backup.suspend':true});
   await backup(source,'older');
   user.firstName='Latest';await admin('PUT',`realms/${realm}/users/${user.id}`,user);
   assert.equal(sql(source,`SELECT first_name FROM user_entity WHERE id='${user.id}'`),'Latest');
   const sessions=sql(source,'SELECT offline_flag,count(*) FROM offline_user_session GROUP BY offline_flag ORDER BY offline_flag');assert.match(sessions,/0\|[1-9]/);assert.match(sessions,/1\|[1-9]/);
   const latest=await backup(source,'latest');
   await save('fixture.json',{userID:user.id,realmID:r.id,keyID:online.keyID,snapshotID:latest.snapshotID,sessions,realmNotBefore:sql(source,`SELECT not_before FROM realm WHERE name='${realm}'`)});
-  intent(source,{'application.replicas':0,'ingress.enabled':false});await stopped(source);
+  intent(source,{running:false,'ingress.enabled':false});await stopped(source);
   return {sourceRelease:app(source).spec.packageRelease,snapshot:latest.snapshotID,sessions,sourceStopped:true};
 }
 async function freshScenario() {
@@ -168,7 +179,7 @@ async function freshScenario() {
   for(const [name,options] of [['kc-a4-no-repo',{backup:false,identity:'recovery'}],['kc-a4-no-match',{identity:'kc-a4-empty',instance:'recovery'}]]) {
     await install(name,options);const a=await ready(name);assert.equal(sql(name,"SELECT count(*) FROM realm WHERE name='master'"),'1');assert.equal(sql(name,"SELECT count(*) FROM realm WHERE name='recovery-proof'"),'0');
     const rec=nativeRecord(name);if(options.backup===false)assert.equal(rec,null);else{assert.equal(rec.phase,'Complete');assert.equal(rec.snapshotID,'');assert.equal(rec.initializationStarted,true)}
-    cases.push({namespace:name,state:a.status.state,record:rec});intent(name,{'application.replicas':0});await stopped(name);
+    cases.push({namespace:name,state:a.status.state,record:rec});intent(name,{running:false});await stopped(name);
   }return cases;
 }
 async function vanillaScenario() {
@@ -179,19 +190,17 @@ async function vanillaScenario() {
     const response=await fetch(base+'/admin/realms/master',{headers:{Authorization:'Bearer '+t.access_token}});
     assert.equal(response.status,200);assert.equal((await response.json()).realm,'master');
     results.push({namespace:ns,administratorAuthentication:true,trustedHTTPS:true});
-    intent(ns,{'application.replicas':0,'ingress.enabled':false});await stopped(ns);
+    intent(ns,{running:false,'ingress.enabled':false});await stopped(ns);
   }
   return results;
 }
 
 async function restoreScenario(ns='kc-a4-restored') {
   const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
-  intent(source,{'application.replicas':0,'ingress.enabled':false});await stopped(source);
+  intent(source,{running:false,'ingress.enabled':false});await stopped(source);
   k('-n',source,'scale','deployment/keycloak-controller','--replicas=0');
   k('-n',source,'wait','pod','-l','app.kubernetes.io/name=keycloak-controller','--for=delete','--timeout=120s');
-  k('-n',source,'scale','statefulset/keycloak-db','--replicas=0');
-  k('-n',source,'wait','pod/keycloak-db-0','--for=delete','--timeout=120s');
-  try {
+  assert.equal(json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak-db').items.length,0);
     await install(ns,{bootstrap:false});const result=await assertRestored(ns,fixture.snapshotID);await activate(ns);
     assert.equal(Object.hasOwn(app(ns).spec,'recoveryAdminSecret'),false);
     assert(!json('-n',ns,'get','secrets').items.some(s=>['keycloak-recovery','keycloak-bootstrap'].includes(s.metadata.name)));
@@ -203,15 +212,13 @@ async function restoreScenario(ns='kc-a4-restored') {
     const login=await oidc();assert.equal(login.subject,fixture.userID);assert.equal(login.keyID,fixture.keyID);
     assert.equal((await admin('GET',`realms/${realm}`)).id,fixture.realmID);
     return {...result,sourceDatabaseUnavailable:true,runtimeAdministratorCredentialsAbsent:true,oidc:'RS256 authorization-code/PKCE, identity and signing key preserved',capturedOnlineAndOfflineRefreshAccepted:true};
-  } finally {
-    k('-n',source,'scale','statefulset/keycloak-db','--replicas=1');
-    k('-n',source,'scale','deployment/keycloak-controller','--replicas=1');
-    k('-n',source,'rollout','status','statefulset/keycloak-db','--timeout=180s');
-  }
+  // Leave the predecessor retired; fallback is an explicit synthetic-only case.
 }
 
 async function fallbackScenario() {
   const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
+  k('-n',source,'scale','deployment/keycloak-controller','--replicas=1');
+  k('-n',source,'rollout','status','deployment/keycloak-controller','--timeout=180s');
   await activate(source);const original=await oidc();
   assert.equal(original.subject,fixture.userID);assert.equal(original.keyID,fixture.keyID);
   await activate('kc-a4-restored');const restored=await oidc();
@@ -230,7 +237,7 @@ async function holdCatalog(ns, table='pg_catalog.pg_class') {
 }
 async function initializerScenario() {
   const ns='kc-a4-init-lock';await install(ns,{replicas:0,identity:'kc-a4-lock'});
-  await until('empty initializer target',()=>app(ns),a=>condition(a,'Stopped')&&a.status.state.classification==='Absent');
+  await until('empty initializer target',()=>app(ns),a=>a.status?.application?.activePods===0&&a.status.state.classification==='Absent');
   k('label','namespace',ns,'kc-a4-lab-');
   intent(ns,{'application.replicas':1});
   const job=await until('finite recovery admitted',()=>json('-n',ns,'get','jobs').items.find(j=>j.metadata.name.startsWith('keycloak-recover-')),Boolean,60);
@@ -252,12 +259,12 @@ async function initializerScenario() {
     }
   } finally {await release();}
   await ready(ns);assert.equal(nativeRecord(ns).phase,'Complete');
-  intent(ns,{'application.replicas':0});await stopped(ns);
+  intent(ns,{running:false});await stopped(ns);
   return {namespace:ns,uncommittedClaimPreserved:true,initialized:true};
 }
 
 async function recoveryBoundary(ns) {
-  const a=await until('empty stopped target',()=>app(ns),a=>condition(a,'Stopped')&&a.status?.state?.classification==='Absent');
+  const a=await until('empty zero-replica target',()=>app(ns),a=>a.status?.application?.activePods===0&&a.status?.state?.classification==='Absent');
   assert.equal(a.spec.application.replicas,0);
   const release=await holdCatalog(ns);
   intent(ns,{'application.replicas':1});
@@ -286,7 +293,7 @@ async function interruptionScenario() {
   const after=await until('reentry retains rollback refusal',()=>app(rollback),a=>condition(a,'Degraded'));
   assert(!json('-n',rollback,'get','jobs').items.some(j=>j.metadata.name===fence.job.metadata.name));
   assert.equal(nativeRecord(rollback),null);
-  intent(rollback,{'application.replicas':0});await stopped(rollback);
+  intent(rollback,{running:false});await stopped(rollback);
 
   const committed='kc-a4-commit-loss';await install(committed,{replicas:0});
   fence=await recoveryBoundary(committed);
@@ -305,16 +312,16 @@ async function interruptionScenario() {
   intent(committed,{'application.replicas':0});
   k('-n',committed,'rollout','restart','deployment/keycloak-controller');
   k('-n',committed,'rollout','status','deployment/keycloak-controller','--timeout=180s');
-  await stopped(committed);await fence.release();
+  await until('zero replica intent observed while restore still executing',()=>app(committed),a=>a.spec.application.replicas===0&&a.status?.application?.activePods===0);await fence.release();
   await until('committed native restore without successful Job',()=>nativeRecord(committed),r=>r?.phase==='Restored',120);
   const failed=await until('lost acknowledgement makes Job fail',()=>json('-n',committed,'get','job',fence.job.metadata.name),j=>j.status?.failed===1,120);
-  const stop=await until('failed committed restore stays stopped',()=>app(committed),a=>condition(a,'Stopped')&&condition(a,'Degraded'));
+  const stop=await until('failed committed restore stays isolated',()=>app(committed),a=>condition(a,'Degraded')&&a.status?.application?.activePods===0);
   assert.equal(stop.status.application.activePods,0);assert(!condition(stop,'Ready'));assert(!condition(stop,'Quiescent'));
   assert.equal(json('-n',committed,'get','ingresses').items.length,0);
   k('-n',committed,'delete','job',fence.job.metadata.name,'--wait=true','--timeout=60s');
   k('-n',committed,'rollout','restart','deployment/keycloak-controller');
   k('-n',committed,'rollout','status','deployment/keycloak-controller','--timeout=180s');
-  await stopped(committed);
+  await until('failed operation remains isolated',()=>app(committed),a=>condition(a,'Degraded')&&a.status?.application?.activePods===0);
   intent(committed,{'application.replicas':1});
   const retained=await until('lost acknowledgement cannot authorize continuation',()=>app(committed),a=>condition(a,'Degraded'));
   assert.equal(retained.status.application.activePods,0);
@@ -377,7 +384,7 @@ async function refusalScenario(resume) {
     const jobs=json('-n',ns,'get','jobs').items;
     const logs=jobs.filter(j=>j.status?.failed).map(j=>({name:j.metadata.name,log:k('-n',ns,'logs','job/'+j.metadata.name)}));
     results.push({namespace:ns,reason:a.status.state.reason,tables,logs});
-    intent(ns,{'application.replicas':0});await stopped(ns);
+    intent(ns,{running:false});await stopped(ns);
   }return results;
 }
 async function subsequentScenario() {
@@ -387,7 +394,7 @@ async function subsequentScenario() {
   user.firstName='Subsequent';await admin('PUT',`realms/${realm}/users/${user.id}`,user);
   assert.equal(sql(ns,`SELECT first_name FROM user_entity WHERE id='${fixture.userID}'`),'Subsequent');
   const captured=await backup(ns,'subsequent');
-  intent(ns,{'application.replicas':0,'ingress.enabled':false});await stopped(ns);
+  intent(ns,{running:false,'ingress.enabled':false});await stopped(ns);
   const target='kc-a4-subsequent';await install(target);
   const result=await assertRestored(target,captured.snapshotID,'Subsequent');await activate(target);
   assert.equal((await oidc()).subject,fixture.userID);
@@ -422,7 +429,7 @@ async function staleScenario() {
     }
   } finally {await release()}
   const foreign='kc-a4-foreign-marker';await install(foreign,{replicas:0});
-  await until('empty foreign marker target',()=>app(foreign),a=>condition(a,'Stopped')&&a.status.state.classification==='Absent');
+  await until('empty foreign marker target',()=>app(foreign),a=>a.status?.application?.activePods===0&&a.status.state.classification==='Absent');
   const original=sql(ns,"SELECT shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()");
   sql(foreign,"COMMENT ON DATABASE keycloak IS '"+original.replaceAll("'","''")+"'");
   intent(foreign,{'application.replicas':1});
@@ -434,7 +441,7 @@ async function staleScenario() {
 
 async function unsupportedScenario() {
   const ns='kc-a4-unsupported';await install(ns);await ready(ns);
-  intent(ns,{'application.replicas':0});await stopped(ns);
+  intent(ns,{'application.replicas':0});await keycloakZero(ns);
   sql(ns,"UPDATE migration_model SET version='26.5.0' WHERE update_time=(SELECT max(update_time) FROM migration_model)");
   const users=sql(ns,'SELECT count(*) FROM user_entity');
   const jobs=json('-n',ns,'get','jobs').items.map(j=>j.metadata.uid).sort();
@@ -443,16 +450,16 @@ async function unsupportedScenario() {
   assert(!condition(app(ns),'Ready'));
   assert.equal(sql(ns,'SELECT count(*) FROM user_entity'),users);
   assert.deepEqual(json('-n',ns,'get','jobs').items.map(j=>j.metadata.uid).sort(),jobs);
-  intent(ns,{'application.replicas':0});await stopped(ns);
+  intent(ns,{'application.replicas':0});await keycloakZero(ns);
   return {sourceVersion:'26.5.0',targetVersion:'26.6.2',nativeStartupRefused:true,usersPreserved:true,noRecoveryReplay:true};
 }
 
 async function ordinaryScenario() {
   await activate(source);
-  assert.equal(app(source).spec.packageRelease,cfg.candidateRelease||'0.5.0','ordinary startup must exercise the candidate');
+  assert.equal(app(source).spec.packageRelease,cfg.candidateRelease,'ordinary startup must exercise the exact candidate');
   const realmID=sql(source,"SELECT id FROM realm WHERE name='recovery-proof'");
   const jobs=json('-n',source,'get','jobs').items.map(j=>j.metadata.uid).sort();
-  intent(source,{'application.replicas':2}); await ready(source);
+  k('-n',source,'scale','keycloakapplication/keycloak','--replicas=2');await ready(source);
   const pods=json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items;
   assert.equal(pods.filter(p=>p.status.containerStatuses?.every(c=>c.ready)).length,2);
   await oidc(); await oidc();
@@ -460,14 +467,34 @@ async function ordinaryScenario() {
   k('-n',source,'rollout','status','deployment/keycloak','--timeout=600s');await ready(source);await oidc();
   assert.equal(sql(source,"SELECT id FROM realm WHERE name='recovery-proof'"),realmID);
   assert.deepEqual(json('-n',source,'get','jobs').items.map(j=>j.metadata.uid).sort(),jobs);
-  intent(source,{'application.replicas':0});await stopped(source);
+  intent(source,{'application.replicas':0});await keycloakZero(source);
   k('-n',source,'rollout','restart','deployment/keycloak-controller');
-  k('-n',source,'rollout','status','deployment/keycloak-controller','--timeout=180s');await stopped(source);
+  k('-n',source,'rollout','status','deployment/keycloak-controller','--timeout=180s');await keycloakZero(source);
   assert.equal(json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.length,0);
-  const captured=await backup(source,'stopped');
+  const captured=await backup(source,'keycloak-zero');
   const fixture=JSON.parse(await readFile(path.join(state,'fixture.json')));
   fixture.snapshotID=captured.snapshotID;await save('fixture.json',fixture);
-  intent(source,{'application.replicas':1});await ready(source);await oidc();
+  k('-n',source,'scale','keycloakapplication/keycloak','--replicas=2');
+  intent(source,{running:false});await stopped(source);
+  staticApply(source);
+  k('-n',source,'rollout','restart','deployment/keycloak-controller');
+  k('-n',source,'rollout','status','deployment/keycloak-controller','--timeout=180s');
+  await stopped(source);
+  assert.equal(app(source).spec.running,false);assert.equal(app(source).spec.application.replicas,2);
+  for(const component of ['deployment/keycloak','statefulset/keycloak-db']){
+    k('-n',source,'rollout','restart',component);
+    await stopped(source);
+    assert.equal(json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.length,0);
+    assert.equal(json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak-db').items.length,0);
+  }
+  assert(!json('-n',source,'get','jobs').items.some(j=>j.status?.active));
+  assert.equal(json('-n',source,'get','ingresses').items.length,0);
+  intent(source,{running:true});await ready(source);await oidc();
+  const keycloakPods=json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.map(p=>p.metadata.uid).sort();
+  k('-n',source,'rollout','restart','statefulset/keycloak-db');
+  k('-n',source,'rollout','status','statefulset/keycloak-db','--timeout=600s');await ready(source);await oidc();
+  assert.deepEqual(json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items.map(p=>p.metadata.uid).sort(),keycloakPods);
+  intent(source,{'application.replicas':1});await ready(source);
   const session=await oidc();
   const notBefore=sql(source,"SELECT not_before FROM realm WHERE name='recovery-proof'");
   const samePod=json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items[0];
@@ -479,7 +506,7 @@ async function ordinaryScenario() {
   assert.equal(sql(source,"SELECT not_before FROM realm WHERE name='recovery-proof'"),notBefore);
   const restartJobs=json('-n',source,'get','jobs').items.map(j=>j.metadata.uid).sort();
   const original=json('-n',source,'get','secret/keycloak-database');
-  intent(source,{'application.replicas':0});await stopped(source);
+  intent(source,{'application.replicas':0});await keycloakZero(source);
   k('-n',source,'patch','secret/keycloak-database','--type=merge','-p',JSON.stringify({data:{password:Buffer.from('deliberately-wrong-connection-password').toString('base64')}}));
   intent(source,{'application.replicas':1});
   await until('unreadable database startup refusal',()=>json('-n',source,'get','pods','-l','app.kubernetes.io/name=keycloak').items,pods=>pods.some(p=>p.status.containerStatuses?.some(c=>c.restartCount>0)));
@@ -493,7 +520,7 @@ async function ordinaryScenario() {
     let failure;try{k('-n',source,'patch','keycloakapplication/keycloak','--type=merge','-p',JSON.stringify({spec:{application:{replicas:value}}}))}catch(e){failure=e}
     assert(failure,'invalid replica intent accepted');assert.equal(app(source).metadata.generation,generation);
   }
-  return {replicas:2,ordinaryRestartPreservedIdentity:true,samePodRestart:true,ordinaryRefreshPreserved:true,persistentStop:true,stoppedCapture:captured.snapshotID,failedObservationDidNotInitialize:true,invalidReplicaIntentsRejected:true};
+  return {replicas:2,nativeScale:true,ordinaryRestartPreservedIdentity:true,samePodRestart:true,ordinaryRefreshPreserved:true,wholeApplicationStop:true,runtimeIntentSurvivedStaticApplyAndControllerRestart:true,stoppedComponentRestartsDidNotWake:true,independentDatabaseRestart:true,keycloakZeroCapture:captured.snapshotID,failedObservationDidNotInitialize:true,invalidReplicaIntentsRejected:true};
 }
 
 async function conflictScenario() {
@@ -514,15 +541,38 @@ async function conflictScenario() {
     intent(source,{'backup.suspend':true});
   }finally{child.stdin.end('SELECT pg_advisory_unlock(748920164);\n\\q\n');assert.equal(await ended,0)}
   await ready(source);await oidc();
-  intent(source,{'application.replicas':0,'ingress.enabled':false});await stopped(source);
+  intent(source,{running:false,'ingress.enabled':false});await stopped(source);
   return {scheduledAndManualNativeExclusion:failures,applicationUsableAfterConflict:true};
+}
+
+async function initialStoppedScenario(){
+  const ns='kc-a4-initial-stopped';
+  await install(ns,{backup:false,running:false,replicas:2,identity:'kc-a4-initial'});
+  await stopped(ns);
+  const assertNoExecution=()=>{
+    assert.equal(app(ns).spec.running,false);assert.equal(app(ns).spec.application.replicas,2);
+    assert(!json('-n',ns,'get','pods').items.some(p=>p.metadata.labels?.['app.kubernetes.io/name']!=='keycloak-controller'));
+    assert.equal(json('-n',ns,'get','jobs').items.length,0);
+    assert.equal(json('-n',ns,'get','ingresses').items.length,0);
+    assert.equal(json('-n',ns,'get','cronjobs').items.length,0);
+  };
+  assertNoExecution();staticApply(ns);
+  k('-n',ns,'rollout','restart','deployment/keycloak-controller');
+  k('-n',ns,'rollout','status','deployment/keycloak-controller','--timeout=180s');await stopped(ns);assertNoExecution();
+  const uid=app(ns).metadata.uid;
+  await assert.rejects(install(ns,{backup:false}),/existing target namespace/);
+  assert.equal(app(ns).metadata.uid,uid);assertNoExecution();
+  intent(ns,{running:true});await ready(ns);
+  assert.equal(json('-n',ns,'get','deployment/keycloak').spec.replicas,2);
+  intent(ns,{running:false});await stopped(ns);
+  return{initialStopNeverExecuted:true,staticApplyAndControllerRestartPreservedIntent:true,occupiedTargetRejected:true,selectedReplicas:2};
 }
 
 const liveConfig=JSON.parse(k('config','view','--minify','-o','json'));
 assert.equal(liveConfig.clusters[0].cluster.server,cfg.server,'refusing an unexpected cluster API');
 await mkdir(path.join(state,'results'),{recursive:true,mode:0o700});
 const scenario=process.argv[2];
-const scenarios={source:sourceScenario,fresh:freshScenario,restore:restoreScenario,initializer:initializerScenario,interruption:interruptionScenario,refusal:refusalScenario,subsequent:subsequentScenario,bypass:bypassScenario,stale:staleScenario,ordinary:ordinaryScenario,conflict:conflictScenario,fallback:fallbackScenario,vanilla:vanillaScenario,unsupported:unsupportedScenario};
+const scenarios={source:sourceScenario,fresh:freshScenario,'initial-stopped':initialStoppedScenario,restore:restoreScenario,initializer:initializerScenario,interruption:interruptionScenario,refusal:refusalScenario,subsequent:subsequentScenario,bypass:bypassScenario,stale:staleScenario,ordinary:ordinaryScenario,conflict:conflictScenario,fallback:fallbackScenario,vanilla:vanillaScenario,unsupported:unsupportedScenario};
 if(!scenarios[scenario])throw Error('Unknown scenario: '+scenario);
 const started=new Date().toISOString();
 try {const result=await scenarios[scenario](...process.argv.slice(3));await save('results/'+scenario+'.json',{started,completed:new Date().toISOString(),scenario,result});console.log(JSON.stringify({scenario,status:'passed',result}));}

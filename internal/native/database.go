@@ -61,17 +61,7 @@ func Observe(ctx context.Context, conn *pgx.Conn, binding string) (Observation, 
 	if err != nil {
 		return o, err
 	}
-	upgrade, err := readUpgrade(ctx, conn, binding, recovery)
-	if err != nil {
-		return o, err
-	}
 	switch {
-	case upgrade != nil:
-		o.Classification, o.Reason = "Upgrading", "NativeUpgradeAdmitted"
-		if upgrade.Started {
-			o.Reason = "NativeUpgradeStarted"
-		}
-		return o, nil
 	case recovery != nil && recovery.Phase == "Restored":
 		o.Classification, o.Reason = "Restored", "NativeRestoreTransactionObserved"
 		return o, nil
@@ -81,7 +71,7 @@ func Observe(ctx context.Context, conn *pgx.Conn, binding string) (Observation, 
 	case recovery != nil && recovery.Phase == "NoBackup":
 		o.Classification, o.Reason = "Absent", "EmptyRecoveryTarget"
 		return o, nil
-	case recovery != nil && recovery.Phase == "Complete", comment == binding+":established", legacyEstablished(comment, binding):
+	case recovery != nil && recovery.Phase == "Complete", comment == binding+":established":
 		// Only the native model version is needed to refuse unsupported downgrade.
 	case comment == binding:
 		var populated bool
@@ -102,8 +92,6 @@ func Observe(ctx context.Context, conn *pgx.Conn, binding string) (Observation, 
 	switch o.Version {
 	case Version:
 		o.Classification, o.Reason = "Valid", "NativeStartupAvailable"
-	case UpgradeSourceVersion:
-		o.Classification, o.Reason = "Upgradeable", "SupportedNativeUpgradeSource"
 	default:
 		o.Classification, o.Reason = "Incomplete", "UnsupportedOrIncompleteKeycloakVersion"
 	}
@@ -198,20 +186,12 @@ func KeycloakStart() error {
 		if recovery.OperationID != os.Getenv("BARTL_RECOVERY_ID") || recovery.StartupStarted {
 			return errors.New("recovery startup already attempted; refusing replay")
 		}
+		version, err := nativeVersion(ctx, conn)
+		if err != nil || (version != UpgradeSourceVersion && version != Version) {
+			return errors.New("restored native data version is unsupported; refusing mutation")
+		}
 		recovery.StartupStarted = true
 		if err = writeRecovery(ctx, conn, recovery); err != nil {
-			return err
-		}
-	case o.Classification == "Upgrading" && os.Getenv("BARTL_ALLOW_UPGRADE") == "true":
-		u, err := readUpgrade(ctx, conn, binding, recovery)
-		if err != nil {
-			return err
-		}
-		if u.Started {
-			return errors.New("native migration already attempted; refusing replay")
-		}
-		u.Started = true
-		if err = writeUpgrade(ctx, conn, binding, recovery, u); err != nil {
 			return err
 		}
 	case o.Classification == "Valid":

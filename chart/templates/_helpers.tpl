@@ -72,8 +72,6 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- end -}}
 
 {{- define "keycloak.defaults" -}}
-application:
-  replicas: 1
 database:
   secretName: keycloak-database
   adminSecretName: keycloak-database-admin
@@ -129,6 +127,9 @@ backup:
       {{- if hasKey .Values.operations.deployments $id -}}
         {{- $intent = index .Values.operations.deployments $id -}}
         {{- include "keycloak.validate" (dict "schema" $definitions.intent "definitions" $definitions "value" $intent "path" (printf "operations.deployments.%s" $id)) -}}
+        {{- range $field := list "running" "replicas" -}}
+          {{- if hasKey $intent $field -}}{{- fail (printf "operations.deployments.%s.%s is runtime intent; use the KeycloakApplication API" $id $field) -}}{{- end -}}
+        {{- end -}}
       {{- end -}}
     {{- end -}}
   {{- end -}}
@@ -150,7 +151,7 @@ backup:
   {{- fail (printf "services.%s.release selects %s but this chart is %s" $instance $selected.release .Chart.Version) -}}
 {{- end -}}
 {{- $service := mergeOverwrite (include "keycloak.defaults" . | fromYaml) (deepCopy $selected) -}}
-{{- range $field, $path := dict "replicas" (list "application" "replicas") "ingressEnabled" (list "ingress" "enabled") "maintenance" (list "ingress" "maintenance") "backupSuspend" (list "backup" "suspend") -}}
+{{- range $field, $path := dict "ingressEnabled" (list "ingress" "enabled") "maintenance" (list "ingress" "maintenance") "backupSuspend" (list "backup" "suspend") -}}
   {{- if hasKey $selection.intent $field -}}
     {{- $_ := set (index $service (first $path)) (last $path) (index $selection.intent $field) -}}
   {{- end -}}
