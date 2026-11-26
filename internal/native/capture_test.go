@@ -28,11 +28,16 @@ func TestRetainedCaptureProtectsBytesAndOwnership(t *testing.T) {
 		{"foreign-volume", func(m *captureManifest, _ *[]byte) { m.PVCUID = "other" }, false},
 		{"redirected-repository", func(m *captureManifest, _ *[]byte) { m.RepositoryID = strings.Repeat("c", 64) }, false},
 		{"changed-native-data", func(m *captureManifest, _ *[]byte) { m.KeycloakImage = UpgradeSourceImage }, false},
+		{"missing-database", func(m *captureManifest, _ *[]byte) { m.Database = "" }, false},
+		{"missing-database-user", func(m *captureManifest, _ *[]byte) { m.DatabaseUser = "" }, false},
+		{"missing-capture-time", func(m *captureManifest, _ *[]byte) { m.CapturedAt = "" }, false},
+		{"malformed-capture-time", func(m *captureManifest, _ *[]byte) { m.CapturedAt = "not-a-time" }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			m := captureManifest{BackupResult: expected, DatabaseBinding: binding, DumpFile: "keycloak.dump", DumpSHA256: hex.EncodeToString(hash[:]), DumpBytes: int64(len(body))}
 			m.OperationUID, m.PodUID = "previous-operation", "previous-pod"
+			m.Database, m.DatabaseUser, m.CapturedAt = "keycloak", "keycloak", "2026-11-26T00:00:00Z"
 			archive := append([]byte(nil), body...)
 			tc.mutate(&m, &archive)
 			data, err := json.Marshal(m)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // readRetainedCapture never trusts staging metadata to select another database,
@@ -37,8 +38,11 @@ func readRetainedCapture(ctx context.Context, dir string, expected BackupResult,
 		m.RepositoryID != expected.RepositoryID || m.KeycloakImage != expected.KeycloakImage ||
 		m.PostgresImage != expected.PostgresImage || m.PackageRelease != expected.PackageRelease ||
 		m.OperationUID == "" || m.PodUID == "" || m.SnapshotID != "" || m.DumpFile != "keycloak.dump" ||
-		m.DumpBytes <= 0 || !backupFullID(m.DumpSHA256) {
+		m.Database == "" || m.DatabaseUser == "" || m.DumpBytes <= 0 || !backupFullID(m.DumpSHA256) {
 		return m, nil, errors.New("retained capture does not match current owned state and repository")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, m.CapturedAt); err != nil {
+		return m, nil, errors.New("retained capture time is malformed")
 	}
 	f, err = os.Open(filepath.Join(dir, "keycloak.dump"))
 	if err != nil {
