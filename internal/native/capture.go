@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // readRetainedCapture never trusts staging metadata to select another database,
@@ -73,4 +74,34 @@ func syncCaptureDirectory(dir string) error {
 	}
 	defer f.Close()
 	return f.Sync()
+}
+
+// Call only while holding the capture volume's native exclusive file lock.
+// pending is the completed, unpublished point and must never be reclaimed here.
+func reclaimCaptureWork(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == ".retired" || strings.HasPrefix(entry.Name(), ".capture-") {
+			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return syncCaptureDirectory(root)
+}
+
+func retireCapture(root string) error {
+	retired := filepath.Join(root, ".retired")
+	if err := os.Rename(filepath.Join(root, "pending"), retired); err != nil {
+		return err
+	}
+	// Persist removal from the eligible name before deleting individual files.
+	// An interrupted cleanup is reclaimed by the next admitted worker.
+	if err := syncCaptureDirectory(root); err != nil {
+		return err
+	}
+	return os.RemoveAll(retired)
 }

@@ -91,6 +91,8 @@ Online `pg_dump` needs PostgreSQL, not running Keycloak. The backup worker valid
 
 A dedicated `keycloak-capture` PVC, sized from database storage rather than another operator choice, retains complete captures across publication failures. The next admitted backup publishes retained complete work before capturing current database state, so a final receipt never represents only an earlier failed publication. Include temporary capture capacity in planning. Both database and capture PVCs survive stop/uninstall until an explicit retention decision. These changed worker semantics require new exact-image qualification.
 
+Native file locking excludes concurrent capture-volume mutation, including a canceled worker whose child has not exited yet. Completed capture becomes eligible by atomic rename to `pending`; verified publication retires that name atomically before file deletion. A later worker reclaims only abandoned temporary capture and retired directories under the same lock, never the pending point.
+
 The controller-owned CronJob admits scheduled/manual capture. Already admitted Jobs retain their configuration when scheduling is suspended or the CronJob is removed. Backup failure must not stop a healthy application, override stop/routing intent or introduce repository access into normal restart.
 
 Backup admission obeys running authority. Keycloak-only zero replicas permits capture; whole-application stop removes the CronJob without deleting admitted Jobs, drains work and never wakes PostgreSQL for backup. `Stopped` requires confirmed component/work termination. Failed or uncertain capture cannot authorize restart; publication failure alone neither stops a healthy enabled application nor overrides stop.

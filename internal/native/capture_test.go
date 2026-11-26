@@ -59,3 +59,36 @@ func TestRetainedCaptureProtectsBytesAndOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestCaptureInterruptionReclaimsOnlyIneligibleWork(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{".capture-interrupted", ".retired", "pending", "diagnostics"} {
+		dir := filepath.Join(root, name)
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "keycloak.dump"), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := reclaimCaptureWork(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".capture-interrupted", ".retired"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("abandoned %s was not reclaimed: %v", name, err)
+		}
+	}
+	for _, name := range []string{"pending", "diagnostics"} {
+		data, err := os.ReadFile(filepath.Join(root, name, "keycloak.dump"))
+		if err != nil || string(data) != name {
+			t.Fatalf("reclamation changed %s", name)
+		}
+	}
+	if err := retireCapture(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "pending")); !os.IsNotExist(err) {
+		t.Fatal("verified capture remained eligible for publication retry")
+	}
+}

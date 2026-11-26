@@ -149,6 +149,9 @@ func Backup(parent context.Context, output io.Writer) error {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return errors.New("another worker still owns capture storage")
 	}
+	if err := reclaimCaptureWork(root); err != nil {
+		return err
+	}
 	pending := filepath.Join(root, "pending")
 	dir := pending
 	retained := false
@@ -313,10 +316,7 @@ func Backup(parent context.Context, output io.Writer) error {
 	if err != nil || ctx.Err() != nil {
 		return errors.New("backup exclusion session was lost before completion")
 	}
-	if err := os.RemoveAll(pending); err != nil {
-		return errors.New("verified capture could not be retired from staging")
-	}
-	if err := syncCaptureDirectory(root); err != nil {
+	if err := retireCapture(root); err != nil {
 		return err
 	}
 	if retained {
