@@ -2,7 +2,7 @@ apiVersion: v2
 name: bartl-keycloak
 description: Namespace-local Keycloak application controller and static configuration
 type: application
-version: 0.9.0-dev.4
+version: 0.9.0-dev.5
 appVersion: "26.6.2"
 kubeVersion: ">=1.30.0-0"
 annotations:
