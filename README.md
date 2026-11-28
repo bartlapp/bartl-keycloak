@@ -2,7 +2,7 @@
 
 Keycloak over HTTPS with its own PostgreSQL database. The package initializes empty state, reconstructs from a configured backup and performs supported native migrations.
 
-This checkout documents **v1alpha2 candidate `0.9.0-dev.7`, with observed qualification results pending independent review**, not a stable release. The preceding `0.9.0-dev.6` candidate has retained live evidence but did not receive full acceptance against the application contract. Its artifacts do not contain these corrections. Stable [0.8.0](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.8.0) retains its release-specific API and instructions. Use an exact supplied candidate archive with its matching procedures; do not apply these instructions to 0.8.0. [DESIGN](DESIGN.md#package-and-qualification-scope) records exact artifact identities, observed results and material limits, including the unqualified normal public-chart path. Publication remains separately authorized work.
+These procedures select the published **v1alpha2 prerelease `0.9.0-dev.7`**. Its [release record](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.9.0-dev.7) contains the accepted profile, public-installation evidence and material limits, including unresolved historical startup failures. This is not a stable release. Stable `0.8.0` uses a different API; use its matching instructions rather than applying this procedure to it.
 
 - [Prerequisites](#prerequisites)
 - [Install a new deployment](#install-a-new-deployment)
@@ -46,7 +46,7 @@ umask 077
 
 ### Obtain the release
 
-Select the exact supplied candidate archive through `CHART_ARCHIVE` and verify its checksum against its delivery record. Once a stable v1alpha2 release is published, omitting that variable selects the latest stable registry release. The API check below rejects historical packages before installation; Helm's default latest selection excludes prereleases.
+The registry path explicitly selects `0.9.0-dev.7`; Helm's unversioned latest selection excludes prereleases and still selects the older stable API. For an unpublished qualification candidate only, supply its verified archive through `CHART_ARCHIVE` instead. Ordinary operation uses the recorded installed version.
 
 ```bash
 mkdir -p "$WORK_DIR/packages"
@@ -54,7 +54,7 @@ CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
 if [ -n "${CHART_ARCHIVE:-}" ]; then
   tar -xzf "$CHART_ARCHIVE" -C "$CHART_STAGE"
 else
-  helm pull oci://ghcr.io/bartlapp/bartl-keycloak --untar --untardir "$CHART_STAGE"
+  helm pull oci://ghcr.io/bartlapp/bartl-keycloak --version 0.9.0-dev.7 --untar --untardir "$CHART_STAGE"
 fi
 helm show chart "$CHART_STAGE/bartl-keycloak" |
   yq -e '.annotations."keycloak.bartl.sh/supported-api" == "keycloak.bartl.sh/v1alpha2"' >/dev/null

@@ -1,6 +1,6 @@
 # Keycloak recovery and replacement
 
-Use this runbook for **v1alpha2 candidate `0.9.0-dev.7`** on independent empty storage, replacement and supported replacement upgrades. Use the [README](README.md) for artifact availability, installation and routine operation; [DESIGN](DESIGN.md#package-and-qualification-scope) records the exercised standalone reconstruction and native-upgrade paths, material limits and pending independent review. The preceding dev.6 evidence retains its own gaps and unexplained startup failures. Stable 0.8.0 retains its release-specific procedures; historical results do not qualify changed artifacts or instructions.
+Use this runbook for the published **v1alpha2 prerelease `0.9.0-dev.7`** on independent empty storage, replacement and supported replacement upgrades. The [README](README.md) owns acquisition and routine operation; the [release record](https://github.com/bartlapp/bartl-keycloak/releases/tag/v0.9.0-dev.7) owns selected-profile acceptance, public-installation evidence and limits. Stable 0.8.0 retains its different API and release-specific procedures.
 
 ## Before starting
 
@@ -113,9 +113,7 @@ SOURCE_INSTANCE="$SOURCE_INSTANCE" yq -e '.services[strenv(SOURCE_INSTANCE)] != 
 
 Use retained source PVC/PV identities where available. A return is possible only after restoring the source directory's approved selector and independent cluster access; a protected-input copy alone is not a source context.
 
-**Choose the target.** Choose an unused deployment key and an unoccupied blue/green namespace on the supplied target cluster. Slots exchange roles only after a retention decision releases the previous placement; never delete an occupied slot to make creation pass. A source using a pre-v1alpha2 CRD requires a **new target cluster**. No CRD conversion, stored-object migration or adoption is part of this procedure. Acquire the candidate as described in [Obtain the release](README.md#obtain-the-release); normal latest stable acquisition does not yet select it. Keep the source package entry unchanged:
-
-For the supplied candidate, set `TARGET_CHART_ARCHIVE` to its checksum-verified archive. This selects the destination package independently of the source's retained chart.
+**Choose the target.** Choose an unused deployment key and an unoccupied blue/green namespace on the supplied target cluster. Slots exchange roles only after a retention decision releases the previous placement; never delete an occupied slot to make creation pass. A source using a pre-v1alpha2 CRD requires a **new target cluster**. No CRD conversion, stored-object migration or adoption is part of this procedure. The registry command below selects the published prerelease independently of the source's retained package. Keep the source package entry unchanged. For an unpublished qualification candidate only, supply its verified archive through `TARGET_CHART_ARCHIVE`.
 
 ```bash
 set -euo pipefail
@@ -130,7 +128,7 @@ TARGET_CHART_STAGE=$(mktemp -d "$WORK_DIR/packages/.keycloak.XXXXXX")
 if [ -n "${TARGET_CHART_ARCHIVE:-}" ]; then
   tar -xzf "$TARGET_CHART_ARCHIVE" -C "$TARGET_CHART_STAGE"
 else
-  helm pull oci://ghcr.io/bartlapp/bartl-keycloak --untar --untardir "$TARGET_CHART_STAGE"
+  helm pull oci://ghcr.io/bartlapp/bartl-keycloak --version 0.9.0-dev.7 --untar --untardir "$TARGET_CHART_STAGE"
 fi
 helm show chart "$TARGET_CHART_STAGE/bartl-keycloak" |
   yq -e '.annotations."keycloak.bartl.sh/supported-api" == "keycloak.bartl.sh/v1alpha2"' >/dev/null
